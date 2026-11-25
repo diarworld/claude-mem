@@ -42,6 +42,13 @@ export function generationStamp(ms: number): string {
   return new Date(ms).toISOString().replace(/[:.]/g, '-');
 }
 
+/** Strict check that a generation string is a stamp produced by generationStamp() —
+ *  it becomes a local path segment during pull, so bucket-controlled values
+ *  (e.g. '../..') must never pass. */
+export function isValidGenerationStamp(generation: string): boolean {
+  return /^\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}-\d{3}Z$/.test(generation);
+}
+
 export function deviceRoot(device: string): string {
   return `${S3_SYNC_ROOT}/${sanitizeDeviceName(device)}`;
 }
@@ -86,7 +93,13 @@ export async function sha256File(filePath: string): Promise<string> {
   });
 }
 
-/** Objects that changed since the previous manifest, by relative key + hash. */
+/**
+ * Objects that changed since the previous manifest, by relative key + hash.
+ * Used by S3SyncManager only as the skip check: an empty result means
+ * nothing changed and the push is skipped. Deletions are NOT represented
+ * (a file absent from `next` simply drops out) — harmless because every
+ * uploaded generation is a complete, self-contained snapshot.
+ */
 export function changedFiles(previous: S3SyncManifest | null, next: S3SyncManifest): S3SyncManifestFile[] {
   if (!previous || previous.set !== next.set) return next.files;
   const before = new Map(previous.files.map(file => [file.key, file.sha256]));
@@ -95,7 +108,8 @@ export function changedFiles(previous: S3SyncManifest | null, next: S3SyncManife
 
 /**
  * Generations to delete so `keep` newest survive. `freshGeneration` (the one
- * just uploaded) always survives even if the clock moved backward.
+ * just uploaded) always survives even if the clock moved backward. At least
+ * one generation always survives (`keep` is floored at 1).
  */
 export function pruneGenerations(keys: string[], set: S3SyncSet, keep: number, freshGeneration?: string): string[] {
   const gens = new Set<string>();

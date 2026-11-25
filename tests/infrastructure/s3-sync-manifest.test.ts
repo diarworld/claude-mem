@@ -1,7 +1,8 @@
-import { describe, expect, test } from 'bun:test';
+import { afterEach, describe, expect, test } from 'bun:test';
 import {
   changedFiles,
   generationStamp,
+  isValidGenerationStamp,
   latestObjectKey,
   manifestObjectKey,
   generationPrefix,
@@ -11,7 +12,7 @@ import {
   sha256File,
   type S3SyncManifest,
 } from '../../src/services/s3sync/manifest.js';
-import { writeFileSync, mkdtempSync } from 'node:fs';
+import { writeFileSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -28,6 +29,11 @@ function manifest(overrides: Partial<S3SyncManifest> = {}): S3SyncManifest {
 }
 
 describe('s3 sync manifest', () => {
+  const tempDirs: string[] = [];
+  afterEach(() => {
+    for (const dir of tempDirs.splice(0)) rmSync(dir, { recursive: true, force: true });
+  });
+
   test('device names are bucket-safe', () => {
     expect(sanitizeDeviceName('DESKTOP-ABC123')).toBe('desktop-abc123');
     expect(sanitizeDeviceName('мой ПК')).toBe('device');
@@ -39,6 +45,15 @@ describe('s3 sync manifest', () => {
     const b = generationStamp(new Date('2026-11-26T10:00:00Z').getTime());
     expect(a < b).toBe(true);
     expect(a).not.toContain(':');
+  });
+
+  test('isValidGenerationStamp accepts only generated stamps', () => {
+    const stamp = generationStamp(new Date('2026-11-26T09:00:00Z').getTime());
+    expect(isValidGenerationStamp(stamp)).toBe(true);
+    expect(isValidGenerationStamp('../..')).toBe(false);
+    expect(isValidGenerationStamp('')).toBe(false);
+    expect(isValidGenerationStamp('2026-11-26T10:00:00Z')).toBe(false);
+    expect(isValidGenerationStamp('g1')).toBe(false);
   });
 
   test('object keys nest under device/set/gen', () => {
@@ -61,6 +76,15 @@ describe('s3 sync manifest', () => {
     expect(changedFiles(null, next)).toHaveLength(3);
   });
 
+  test('deletions are not reported as changes', () => {
+    const prev = manifest({ files: [
+      { key: 'stay', bytes: 1, sha256: 'same' },
+      { key: 'gone', bytes: 2, sha256: 'old' },
+    ] });
+    const next = manifest({ files: [{ key: 'stay', bytes: 1, sha256: 'same' }] });
+    expect(changedFiles(prev, next).map(f => f.key)).toEqual([]);
+  });
+
   test('prune keeps the newest N generations and never the fresh one', () => {
     const keys = [
       'claude-mem-sync/box/db/gen/g1/x', 'claude-mem-sync/box/db/gen/g2/x',
@@ -68,6 +92,14 @@ describe('s3 sync manifest', () => {
     ];
     expect(pruneGenerations(keys, 'db', 2)).toEqual(['g1']);
     expect(pruneGenerations(keys, 'db', 2, 'g1')).toEqual([]);
+  });
+
+  test('prune never deletes the last generation, even with keep=0', () => {
+    const keys = [
+      'claude-mem-sync/box/db/gen/g1/x', 'claude-mem-sync/box/db/gen/g2/x',
+      'claude-mem-sync/box/db/gen/g3/x', 'claude-mem-sync/box/chroma/gen/g9/x',
+    ];
+    expect(pruneGenerations(keys, 'db', 0)).toEqual(['g2', 'g1']);
   });
 
   test('latest marker round-trips', () => {
@@ -78,8 +110,15 @@ describe('s3 sync manifest', () => {
 
   test('sha256File hashes file contents', async () => {
     const dir = mkdtempSync(join(tmpdir(), 's3sync-test-'));
+    tempDirs.push(dir);
     const file = join(dir, 'f.txt');
     writeFileSync(file, 'hello');
     expect(await sha256File(file)).toBe('2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824');
+  });
+
+  test('sha256File rejects a nonexistent path', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 's3sync-test-'));
+    tempDirs.push(dir);
+    await expect(sha256File(join(dir, 'nope.txt'))).rejects.toThrow();
   });
 });
