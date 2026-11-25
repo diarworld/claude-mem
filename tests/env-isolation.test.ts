@@ -382,6 +382,58 @@ describe('Issue #2357: CLAUDE_CODE_EFFORT_* env-var isolation', () => {
   });
 });
 
+/**
+ * S3 Sync bucket credentials (S3_SYNC_*): the worker reads them in-process
+ * via loadClaudeMemEnv(); no SDK child needs them. Both leak paths are
+ * closed — the parent shell (BLOCKED_ENV_VARS) and the ~/.claude-mem/.env
+ * whitelist (excluded in buildIsolatedEnv's CREDENTIAL_KEYS copy loop).
+ */
+describe('S3 Sync credential isolation', () => {
+  const ORIGINAL_ACCESS_KEY = process.env.S3_SYNC_ACCESS_KEY_ID;
+  const ORIGINAL_SECRET_KEY = process.env.S3_SYNC_SECRET_ACCESS_KEY;
+
+  beforeAll(() => {
+    fs.mkdirSync(TEST_DATA_DIR, { recursive: true, mode: 0o700 });
+    process.env.CLAUDE_MEM_ENV_FILE = TEST_ENV_FILE;
+  });
+
+  afterAll(() => {
+    if (ORIGINAL_ENV_FILE === undefined) delete process.env.CLAUDE_MEM_ENV_FILE;
+    else process.env.CLAUDE_MEM_ENV_FILE = ORIGINAL_ENV_FILE;
+  });
+
+  beforeEach(() => {
+    clearEnvFile();
+  });
+
+  afterEach(() => {
+    clearEnvFile();
+    if (ORIGINAL_ACCESS_KEY === undefined) delete process.env.S3_SYNC_ACCESS_KEY_ID;
+    else process.env.S3_SYNC_ACCESS_KEY_ID = ORIGINAL_ACCESS_KEY;
+    if (ORIGINAL_SECRET_KEY === undefined) delete process.env.S3_SYNC_SECRET_ACCESS_KEY;
+    else process.env.S3_SYNC_SECRET_ACCESS_KEY = ORIGINAL_SECRET_KEY;
+  });
+
+  it('strips shell-exported S3 Sync credentials via BLOCKED_ENV_VARS (layer 1)', () => {
+    process.env.S3_SYNC_ACCESS_KEY_ID = 'AKIA-shell';
+    process.env.S3_SYNC_SECRET_ACCESS_KEY = 'shell-secret';
+
+    const result = buildIsolatedEnv();
+
+    expect(result.S3_SYNC_ACCESS_KEY_ID).toBeUndefined();
+    expect(result.S3_SYNC_SECRET_ACCESS_KEY).toBeUndefined();
+  });
+
+  it('never copies S3 Sync credentials from .env (read in-process only)', () => {
+    fs.writeFileSync(TEST_ENV_FILE, 'S3_SYNC_ACCESS_KEY_ID=AKIA-file\nS3_SYNC_SECRET_ACCESS_KEY=file-secret\n', { mode: 0o600 });
+
+    const result = buildIsolatedEnv();
+
+    expect(result.S3_SYNC_ACCESS_KEY_ID).toBeUndefined();
+    expect(result.S3_SYNC_SECRET_ACCESS_KEY).toBeUndefined();
+  });
+});
+
 describe('Issue #5346: Observer beta opt-out propagation', () => {
   const ORIGINAL_BETA_OPT_OUT = process.env.CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS;
   const ORIGINAL_UNRELATED = process.env.CLAUDE_CODE_RANDOM_OTHER;

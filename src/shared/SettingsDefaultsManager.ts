@@ -471,6 +471,17 @@ export interface SettingsDefaults {
   CLAUDE_MEM_BACKUP_ENABLED: string;
   CLAUDE_MEM_BACKUP_INTERVAL_HOURS: string;
   CLAUDE_MEM_BACKUP_RETAIN_COUNT: string;
+  // S3 Sync (src/services/s3sync/S3SyncManager.ts). Opt-in via ENABLED.
+  CLAUDE_MEM_S3_SYNC_ENABLED: string;
+  CLAUDE_MEM_S3_SYNC_ENDPOINT: string;
+  CLAUDE_MEM_S3_SYNC_BUCKET: string;
+  CLAUDE_MEM_S3_SYNC_REGION: string;
+  CLAUDE_MEM_S3_SYNC_DB_INTERVAL_HOURS: string;
+  CLAUDE_MEM_S3_SYNC_CHROMA_INTERVAL_HOURS: string;
+  CLAUDE_MEM_S3_SYNC_KEEP_GENERATIONS: string;
+  CLAUDE_MEM_S3_SYNC_INCLUDE_ENV: string;
+  CLAUDE_MEM_S3_SYNC_INCLUDE_CHROMA: string;
+  CLAUDE_MEM_S3_SYNC_DEVICE: string;
   CLAUDE_MEM_TELEGRAM_ENABLED: string;
   CLAUDE_MEM_TELEGRAM_BOT_TOKEN: string;
   CLAUDE_MEM_TELEGRAM_CHAT_ID: string;
@@ -809,6 +820,18 @@ export class SettingsDefaultsManager {
     CLAUDE_MEM_BACKUP_ENABLED: 'false',
     CLAUDE_MEM_BACKUP_INTERVAL_HOURS: '24',   // Snapshot cadence in hours
     CLAUDE_MEM_BACKUP_RETAIN_COUNT: '7',      // Keep the N most-recent snapshots
+    // S3 Sync. Off by default; opt-in. Credentials are not here: they live in
+    // .env as S3_SYNC_ACCESS_KEY_ID / S3_SYNC_SECRET_ACCESS_KEY (EnvManager whitelist).
+    CLAUDE_MEM_S3_SYNC_ENABLED: 'false',
+    CLAUDE_MEM_S3_SYNC_ENDPOINT: 'https://storage.yandexcloud.net',
+    CLAUDE_MEM_S3_SYNC_BUCKET: '',
+    CLAUDE_MEM_S3_SYNC_REGION: 'ru-central1',
+    CLAUDE_MEM_S3_SYNC_DB_INTERVAL_HOURS: '6',        // DB+config set cadence in hours
+    CLAUDE_MEM_S3_SYNC_CHROMA_INTERVAL_HOURS: '24',   // chroma vector index cadence in hours
+    CLAUDE_MEM_S3_SYNC_KEEP_GENERATIONS: '5',         // generations kept per set in the bucket
+    CLAUDE_MEM_S3_SYNC_INCLUDE_ENV: 'true',           // .env travels with the db set (plaintext, private bucket)
+    CLAUDE_MEM_S3_SYNC_INCLUDE_CHROMA: 'true',
+    CLAUDE_MEM_S3_SYNC_DEVICE: '',                    // bucket prefix; empty = os.hostname()
     CLAUDE_MEM_TELEGRAM_ENABLED: 'true',
     CLAUDE_MEM_TELEGRAM_BOT_TOKEN: '',
     CLAUDE_MEM_TELEGRAM_CHAT_ID: '',
