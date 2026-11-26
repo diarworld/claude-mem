@@ -197,28 +197,30 @@ Also update `tests/npx-cli/combined-installer-non-tty-boundaries.test.ts` (238-2
 
 ---
 
-### Task 7: Viewer setup UI — one card, no trial, no checkout screens
+### Task 7: Viewer setup UI — UX surgery (post-T5 remainder)
 
-**Files (all under `src/ui/my-work/src/setup/`):**
-- Modify: `setup-flow.ts`, `setup-data.ts`, `setup-telemetry.ts`, `setup-sample.ts`, `setup-page.tsx`, `screens/choice-screen.tsx`, `screens/reveal-screen.tsx`, `screens/finish-setup-screen.tsx`, `screens/shared.tsx`
-- Delete: `screens/checkout-screen.tsx`, `screens/savings-screen.tsx`
-- Modify in-src tests: `setup-flow.test.ts`, `setup-telemetry.test.ts`
-- Locale prune: `src/ui/i18n/setup-{ru,fr,ko,zh,pt-BR}.ts` — remove keys used only by deleted screens (checkout/savings/trial/offer/On-The-Go copy; lists in explore map §5)
-- Tests: `tests/ui/my-work/setup-step-bar.test.ts` (delete checkout describe 190-258 + helpers 19/38/52), `tests/ui/my-work/setup-flow.browser.test.ts` (rewrite checkout its 285, 320, 353, 368-371)
+Most compile-level deletions already landed in Task 5 (840d26277): checkout/savings screens, PrivateWorkViewLink, go branches, offers. Remaining:
 
-**Steps:**
-1. `setup-flow.ts`: drop `cloudSyncOffer` state (27-31), `needsCheckout`/`canOfferHosted`/`nextAfterChoice` (55-68) — next is always `finish-setup`; `guardStep` (110-117) drops checkout/savings/'go'-import guards; `SETUP_PROGRESS_STEPS`/`PREVIOUS_STEP` keep words for legacy steps (`checkout`, `savings` stay defined — state-machine rule: screens never reach them, words remain).
-2. `setup-page.tsx`: alreadyPro (147-151) → skip choice entirely: auto-submit `{ branch: 'home', memoryBilling: 'existing' }` showing "Keeping your existing configuration."; delete `onStartTrial` (336), `openCheckout` (271-277), checkout effects (155-171), go tool filter (158-159, 194); `submitChoice` (183-185, 238-263) without offer/`open_checkout`; `FinishSetupScreen` without `branch` prop gating (346-347).
-3. `choice-screen.tsx`: delete the 'go' card (51-71), offers fieldset (87-95), `ORBIT`/`BRANCH_NAMES.go`/`OFFER_LABELS` (19-33); single 'home' card, submit `Use this computer`; home card copy — memory runs on the internal model gateway (replace the 'Your Claude account writes the memories' line; the terminal applies the GPUStack defaults from design 4a).
-4. `checkout-screen.tsx`, `savings-screen.tsx`: DELETE; remove their wiring (setup-page 339-344) and `PrivateWorkViewLink` in `shared.tsx` (18-23).
-5. `reveal-screen.tsx`: delete `onStartTrial` prop + trial CTA row (186-226, 262, 284).
-6. `finish-setup-screen.tsx`: drop `branch` gating (163, 201, 230) — import offer copy stays hidden (history only existed for 'go').
-7. `setup-data.ts`: `checkout` (115, 170, 449), `alreadyPro` (119), `choose(...)`/`checkout()` API (145-147), PLAN legacy receipt (464) — prune to home shape.
-8. `setup-telemetry.ts`: `VisitState.branch` type narrows; `action(...)` drops `offer` (54-56).
-9. Locale prune (ru/fr/ko/zh/pt-BR): delete keys for checkout/savings/trial/offers (grep each deleted English string; e.g. setup-ru.ts 51, 53, 55, 199-201, 400-401).
+**From the approved design:**
+1. alreadyPro machines skip the choice screen entirely — auto-submit `{ branch: 'home', memoryBilling: 'existing' }` with "Keeping your existing configuration." messaging (consume the `flow.alreadyPro` scaffold at setup-flow.ts:29-30 / setup-page.tsx:143-144).
+2. Home card copy: replace "Your Claude account writes the memories" — memory runs on the internal model gateway (GPUStack).
+3. Installer produces `home-kept-existing` (applyChoice kept-existing path currently always reports `home-ready`; install.ts:2678-2684 interim comment says it "arrives with the home-only contract") — wire the real stage so the summary and choiceLocked read it.
+4. Remove the import UI from the page flow (ImportScreen, startImport/stopImport, guardStep import entries) — unreachable since `history={null}`; worker import routes stay (legacy contract).
 
-**Verify:** `npm run typecheck` (viewer included) && `bun test tests/ui/my-work/` && `bun test src/ui/my-work/src/setup/setup-flow.test.ts`.
-**Commit:** `feat(setup-ui): home-only funnel (single local card, no trial/checkout screens)`
+**From the Task 5 quality review (all explicit, do not lose):**
+5. Four one-liner comment fixes: finish-setup-screen.tsx:37 ("On The Go:" prefix on Connection); setup-data.ts:45 (orphaned extraction comment above the wrong interface); setup-page.tsx:314 (`history={null}` why-comment); setup-state.ts:39 (alreadyPro doc describes On The Go/checkout).
+6. `hasProConfiguration` rename (dishonest name — it means "already configured"; 2 call sites; never rename the `already_pro` wire fields).
+7. Usage plumbing deletion: `SetupChoice.usage`, `SetupData.usage` (setup-data.ts:105/115/288/300), `setup-usage.ts` re-export + its test header — never written by this build, reader (savings screen) deleted.
+8. setup-funnel.ts:14 SETUP_MEMORY_BILLINGS comment (hosted generation gone) + resolve the branch-strict/billing-lenient asymmetry (narrow the enum or document the leniency; setup-state-routes.test.ts:445 cements current behavior).
+9. setup-funnel.ts:79 SETUP_FUNNEL_VERSION comment (describes deleted checkout/trial design; constant stays for v1/v2 telemetry compat).
+10. import-screen.tsx:15 copy ("On The Go with history only" — legacy-only and UI-unreachable).
+11. i18n locale prune: keys used only by deleted screens (checkout/savings/trial/offers/On-The-Go copy) across setup-{ru,fr,ko,zh,pt-BR}.ts.
+12. Copy pass for the single-answer choice screen ("Choose your memory plan" / "Free") — reword honestly for one local option.
+
+**From the Task 5 spec review (belt-and-braces, may land here or in T8):**
+13. One route-level test: plant a legacy go+checkout state file, drive it through an HTTP-route write, assert the on-disk file is cleared.
+
+In-src tests (setup-flow.test.ts, setup-telemetry.test.ts) + tests/ui/my-work/* follow the changes.
 
 ---
 
