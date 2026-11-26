@@ -17,7 +17,7 @@ import { loadClaudeMemEnv } from '../../shared/EnvManager.js';
 import { ORIGIN_DEVICE_ID_MAX_BYTES } from '../../shared/cloud-sync-limits.js';
 import { logger } from '../../utils/logger.js';
 import { BunS3Transport, type S3Transport } from './s3-transport.js';
-import { S3_SYNC_SETS, isValidGenerationStamp, type S3SyncManifest, type S3SyncManifestFile, type S3SyncSet,
+import { S3_SYNC_SETS, S3_SYNC_ROOT, isValidGenerationStamp, peersFromKeys, type S3SyncManifest, type S3SyncManifestFile, type S3SyncSet,
   changedFiles, generationPrefix, generationStamp, latestMarkerPayload, latestObjectKey,
   manifestObjectKey, parseLatestMarker, pruneGenerations, sanitizeDeviceName, setPrefix, sha256File } from './manifest.js';
 import { buildChromaSnapshotSet, buildDbSnapshotSet, gunzipFile, type SnapshotEntry, type SnapshotInput } from './snapshot.js';
@@ -110,7 +110,54 @@ const DEFAULT_INITIAL_DELAY_MS = 5 * 60_000;
 const MAX_TIMER_DELAY_MS = 2_147_483_647;
 
 interface PersistedSetState { lastPushAt: number | null; lastGeneration: string | null; lastError: string | null; lastPullAt: number | null; }
-interface PersistedState { version: 1; db: PersistedSetState; chroma: PersistedSetState; /** This device's stable replica-row identity, minted once (see ensureSyncIdentity). Optional only for state files written before it existed. */ syncIdentity?: string; }
+
+/** Last-merge outcome per peer, for status/UI (S3 Sync v2 Task 3). */
+export interface MergePeerState {
+  state: 'ok' | 'error' | 'skipped';
+  applied: number;
+  lastMergeAt: number;
+  lastError: string | null;
+}
+
+interface PersistedState {
+  version: 1;
+  db: PersistedSetState;
+  chroma: PersistedSetState;
+  /** This device's stable replica-row identity, minted once (see ensureSyncIdentity). Optional only for state files written before it existed. */
+  syncIdentity?: string;
+  /**
+   * Per-peer merge watermark: the last LATEST generation stamp successfully
+   * merged from that peer. Key = the peer's device ROOT (the sanitized
+   * bucket path segment from discovery), NOT a sync identity — the bucket
+   * routes storage, the identity names the replica. Optional only for state
+   * files written before merges existed.
+   */
+  mergedGenerations?: Record<string, string>;
+  /** Per-peer last-merge outcome for status/UI. Optional only for pre-merge state files. */
+  mergeState?: Record<string, MergePeerState>;
+}
+
+/** The honest runtime shape: loadState guarantees these, whatever the file held. */
+type HydratedState = PersistedState & {
+  syncIdentity: string;
+  mergedGenerations: Record<string, string>;
+  mergeState: Record<string, MergePeerState>;
+};
+
+/** A hand-edited/corrupt state file may hold garbage where a map belongs — that reads as empty, never crashes. */
+function recordOrEmpty<T>(value: unknown): Record<string, T> {
+  return value !== null && typeof value === 'object' && !Array.isArray(value) ? (value as Record<string, T>) : {};
+}
+
+/**
+ * The distinct peer device roots in one sync-root listing, own excluded,
+ * sorted. The transport contract (S3Transport.listKeys) already walks
+ * pagination and returns the COMPLETE key list, so nothing is paginated here;
+ * a listing that is empty or (type-lying) undefined yields no peers.
+ */
+export async function discoverPeers(transport: S3Transport, ownDeviceRoot: string): Promise<string[]> {
+  return peersFromKeys(await transport.listKeys(`${S3_SYNC_ROOT}/`), ownDeviceRoot);
+}
 
 function emptySetState(): PersistedSetState {
   return { lastPushAt: null, lastGeneration: null, lastError: null, lastPullAt: null };
@@ -145,6 +192,9 @@ export class S3SyncManager {
    * entry (before the pipeline's first await) so stop() can always observe
    * and settle an in-flight push. */
   private readonly pushPromises = new Map<S3SyncSet, Promise<unknown>>();
+
+  /** Peers from the most recent discovery; null = never discovered (status reports unknown, not empty). */
+  private lastMergePeers: string[] | null = null;
 
   constructor(settings: S3SyncSettingKeys, options: S3SyncManagerOptions = {}) {
     this.settings = settings;
@@ -193,14 +243,24 @@ export class S3SyncManager {
     return path.join(this.s3syncDir, 'state.json');
   }
 
-  private loadState(): PersistedState & { syncIdentity: string } {
+  private loadState(): HydratedState {
     try {
       const state = parseJsonWithBom<PersistedState>(readFileSync(this.statePath(), 'utf-8'));
-      if (state && state.version === 1 && state.db && state.chroma) return this.ensureSyncIdentity(state);
+      if (state && state.version === 1 && state.db && state.chroma) return this.hydrateState(state);
     } catch {
       // Missing or unreadable state falls through to a fresh one.
     }
-    return this.ensureSyncIdentity({ version: 1, db: emptySetState(), chroma: emptySetState() });
+    return this.hydrateState({ version: 1, db: emptySetState(), chroma: emptySetState() });
+  }
+
+  /** ensureSyncIdentity plus merge-map normalization: absent or non-object maps read as {} (honest required-at-runtime shape). */
+  private hydrateState(state: PersistedState): HydratedState {
+    const withIdentity = this.ensureSyncIdentity(state);
+    return {
+      ...withIdentity,
+      mergedGenerations: recordOrEmpty<string>(withIdentity.mergedGenerations),
+      mergeState: recordOrEmpty<MergePeerState>(withIdentity.mergeState),
+    };
   }
 
   /**
@@ -236,6 +296,64 @@ export class S3SyncManager {
   private saveState(state: PersistedState): void {
     mkdirSync(this.s3syncDir, { recursive: true });
     writeJsonFileAtomic(this.statePath(), state, { mode: 0o600 });
+  }
+
+  // --- merge state (S3 Sync v2) -------------------------------------------
+  //
+  // Per-peer watermarks and outcomes, keyed by the peer's device ROOT (the
+  // sanitized bucket segment discoverPeers yields) — never by a sync
+  // identity. Every write goes load-fresh → mutate → atomic save, the same
+  // discipline as the per-set facts above.
+
+  /** Discover peers through this manager's transport and cache the result for status(). */
+  async discoverMergePeers(): Promise<string[]> {
+    const peers = await discoverPeers(this.transport, sanitizeDeviceName(this.device));
+    this.lastMergePeers = peers;
+    return peers;
+  }
+
+  /**
+   * The last LATEST generation successfully merged from a peer (its
+   * watermark), or null. A persisted value that is not a valid stamp (hand
+   * -edited state) reads as null — it must never drive a comparison; status
+   * keeps showing the persisted truth.
+   */
+  private peerWatermark(peerRoot: string): string | null {
+    const stored = this.loadState().mergedGenerations[peerRoot];
+    return typeof stored === 'string' && isValidGenerationStamp(stored) ? stored : null;
+  }
+
+  private setMergeState(peerRoot: string, entry: MergePeerState): void {
+    if (!peerRoot) return;
+    const state = this.loadState();
+    state.mergeState[peerRoot] = entry;
+    this.saveState(state);
+  }
+
+  /**
+   * Record a fully successful peer merge: the watermark advances to
+   * `generation` and the outcome is 'ok' with the applied count. A generation
+   * that is not a valid stamp (malformed, path-traversal) is IGNORED with no
+   * state change — a stamp that could never be safely compared must not
+   * become a watermark (same clamp honesty as v1's interval handling). The
+   * stamp format is validated again at read (peerWatermark).
+   */
+  private recordPeerMerged(peerRoot: string, generation: string, applied: number): void {
+    if (!peerRoot || !isValidGenerationStamp(generation)) return;
+    const state = this.loadState();
+    state.mergedGenerations[peerRoot] = generation;
+    state.mergeState[peerRoot] = { state: 'ok', applied, lastMergeAt: this.now(), lastError: null };
+    this.saveState(state);
+  }
+
+  /** A peer merge attempt failed (download/verify/apply); its watermark stays untouched. */
+  private recordPeerError(peerRoot: string, error: string): void {
+    this.setMergeState(peerRoot, { state: 'error', applied: 0, lastMergeAt: this.now(), lastError: error });
+  }
+
+  /** A peer had nothing to merge (its LATEST is at or below the watermark). */
+  private recordPeerSkipped(peerRoot: string): void {
+    this.setMergeState(peerRoot, { state: 'skipped', applied: 0, lastMergeAt: this.now(), lastError: null });
   }
 
   private cachedManifest(set: S3SyncSet): S3SyncManifest | null {
@@ -840,6 +958,12 @@ export class S3SyncManager {
     /** This device's stable replica-row identity (see ensureSyncIdentity). */
     syncIdentity: string;
     sets: Record<S3SyncSet, S3SyncSetStatus>;
+    /** Multi-device merge (S3 Sync v2): peers null = never discovered yet (unknown, not empty). */
+    merge: {
+      peers: string[] | null;
+      mergedGenerations: Record<string, string>;
+      mergeState: Record<string, MergePeerState>;
+    };
   } {
     const persisted = this.loadState();
     const fromState = (set: S3SyncSet): S3SyncSetStatus => ({
@@ -858,6 +982,11 @@ export class S3SyncManager {
       device: this.device,
       syncIdentity: persisted.syncIdentity, // loadState guarantees presence
       sets: { db: fromState('db'), chroma: fromState('chroma') },
+      merge: {
+        peers: this.lastMergePeers,
+        mergedGenerations: persisted.mergedGenerations,
+        mergeState: persisted.mergeState,
+      },
     };
   }
 }
