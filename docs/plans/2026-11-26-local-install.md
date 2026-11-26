@@ -149,8 +149,10 @@ Also update `tests/npx-cli/combined-installer-non-tty-boundaries.test.ts` (238-2
 ### Task 5: Shared funnel contract — `home` only
 
 **Files:**
-- Modify: `src/shared/setup-funnel.ts`, `src/shared/setup-state.ts`
+- Modify: `src/shared/setup-funnel.ts`, `src/shared/setup-state.ts`, `src/npx-cli/install/pairing.ts`
 - Test: `tests/telemetry/setup-funnel.test.ts` (prune 'go'/offer cases; keep step/branch validation), new `tests/shared/setup-state-legacy.test.ts`
+
+**pairing.ts addition (from Task 3 quality review):** pairing.ts:22 imports `CLOUD_SYNC_SETUP_CONTRACT`/`SetupCloudSyncOffer` from setup-funnel.ts — deleted in this task, so trim pairing.ts's funnel plumbing here too: the `cloudSyncOffer` option + mutation in `buildInstallerOAuthStartBody` (~310-313), the setupFlowId/cloudSyncOffer opts if unreachable from teambrain, and the parse-side references (~204-207). Wire bodies must stay byte-identical for the teambrain join (which passes neither field).
 
 **Steps:**
 1. `setup-funnel.ts`:
