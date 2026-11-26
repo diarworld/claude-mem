@@ -7,6 +7,7 @@ import { paths } from '../../src/shared/paths.js';
 import { S3SyncManager } from '../../src/services/s3sync/S3SyncManager.js';
 import type { S3Transport } from '../../src/services/s3sync/s3-transport.js';
 import { applyPendingChromaRestore } from '../../src/services/s3sync/chroma-restore.js';
+import { ChromaSyncState } from '../../src/services/sync/ChromaSyncState.js';
 import {
   readPendingChromaRestore, readPendingRestore, stagePendingChromaRestore,
 } from '../../src/services/backup/snapshot-files.js';
@@ -263,5 +264,76 @@ describe('manager pull', () => {
     expect(existsSync(join(dir, 'backups', 'restore-pending.json'))).toBe(false);
     expect(existsSync(join(dir, 'backups', 'restore-chroma-pending.json'))).toBe(false);
     expect(existsSync(join(dir, 'backups', 's3sync-incoming'))).toBe(false);
+  });
+
+  test('a tampered remote file aborts the pull with a hard error before anything is staged', async () => {
+    isolated = isolate();
+    const dir = isolated.dir;
+    const s3 = new FakeS3();
+    await pushBothSets(dir, s3);
+    // corrupt one uploaded object: its bytes no longer match the manifest
+    const dbGzKey = [...s3.objects.keys()].find(k => k.includes('/db/gen/') && k.endsWith('claude-mem.db.gz'))!;
+    s3.objects.set(dbGzKey, Buffer.from('tampered bytes that hash differently'));
+    const manager = makeManager(dir, s3);
+
+    await expect(manager.pull({ set: 'all' })).rejects.toThrow(/claude-mem\.db\.gz/);
+
+    expect(existsSync(join(dir, 'backups', 'restore-pending.json'))).toBe(false);
+    expect(existsSync(join(dir, 'backups', 'restore-chroma-pending.json'))).toBe(false);
+    const backups = readdirSync(join(dir, 'backups'));
+    expect(backups.filter(name => /^claude-mem-.*-from-s3\.db(\.partial)?$/.test(name)).length).toBe(0);
+    // the incoming landing zone was cleaned up
+    const incomingRoot = join(dir, 'backups', 's3sync-incoming');
+    expect(existsSync(incomingRoot) ? readdirSync(incomingRoot).length : 0).toBe(0);
+  });
+
+  test('force pull stages a chroma index paired with a foreign db generation and flags a rebuild', async () => {
+    isolated = isolate();
+    const dir = isolated.dir;
+    const s3 = new FakeS3();
+    await pushBothSets(dir, s3);
+    const manager = makeManager(dir, s3);
+    const chromaManifestKey = [...s3.objects.keys()].find(k => k.includes('/chroma/gen/') && k.endsWith('/manifest.json'))!;
+    const chromaGen = chromaManifestKey.split('/')[4];
+    const manifest = JSON.parse(s3.objects.get(chromaManifestKey)!.toString());
+    manifest.pairedDbGeneration = '2099-01-01T00-00-00-000Z';
+    s3.objects.set(chromaManifestKey, Buffer.from(JSON.stringify(manifest)));
+    const rebuildSpy = spyOn(ChromaSyncState, 'markAllForRebuild').mockImplementation(() => {});
+
+    try {
+      const result = await manager.pull({ set: 'all', force: true });
+
+      expect(result.sets.every(s => s.status === 'pulled')).toBe(true);
+      expect(rebuildSpy).toHaveBeenCalled();
+      const staging = join(dir, 'state', 's3sync', `chroma-restore-${chromaGen}`);
+      const chromaPending = readPendingChromaRestore(join(dir, 'backups', 'restore-chroma-pending.json'));
+      expect(chromaPending?.stagingDir).toBe(staging);
+      expect(chromaPending?.pairedDbGeneration).toBe('2099-01-01T00-00-00-000Z');
+      expect(existsSync(join(staging, 'chroma.sqlite3'))).toBe(true);
+    } finally {
+      rebuildSpy.mockRestore();
+    }
+  });
+
+  test('explicit generation pulls that generation; an invalid one is rejected before any path use', async () => {
+    isolated = isolate();
+    const dir = isolated.dir;
+    const s3 = new FakeS3();
+    const { dbGen } = await pushBothSets(dir, s3);
+    const manager = makeManager(dir, s3);
+
+    const result = await manager.pull({ set: 'db', generation: dbGen });
+
+    expect(result.sets).toHaveLength(1);
+    expect(result.sets[0].set).toBe('db');
+    expect(result.sets[0].status).toBe('pulled');
+    expect(result.sets[0].generation).toBe(dbGen);
+    expect(readPendingRestore(join(dir, 'backups', 'restore-pending.json'))?.snapshot)
+      .toBe(`claude-mem-${dbGen}-from-s3.db`);
+
+    await expect(manager.pull({ set: 'db', generation: '../../etc' })).rejects.toThrow('invalid generation: ../../etc');
+    // the rejected call staged nothing new
+    expect(readPendingRestore(join(dir, 'backups', 'restore-pending.json'))?.snapshot)
+      .toBe(`claude-mem-${dbGen}-from-s3.db`);
   });
 });

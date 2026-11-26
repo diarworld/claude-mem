@@ -7,7 +7,7 @@
  * Per-set run facts persist in state/s3sync/state.json, so status survives
  * restarts and a push that just ran is not repeated by the next boot.
  */
-import { copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { paths, USER_SETTINGS_PATH } from '../../shared/paths.js';
@@ -65,6 +65,8 @@ export interface S3SyncSetStatus {
   lastPushAt: number | null;
   lastGeneration: string | null;
   lastError: string | null;
+  /** When this set last staged a pull (freshness of the pulled copy). */
+  lastPullAt: number | null;
   nextRunAt: number | null;
 }
 
@@ -222,6 +224,7 @@ export class S3SyncManager {
     if (this.started || this.stopped) return;
     this.started = true;
     this.sweepStaleStaging();
+    this.sweepPullLeftovers();
     for (const set of S3_SYNC_SETS) {
       this.schedule(set, this.jittered(this.initialDelayMs));
     }
@@ -243,6 +246,50 @@ export class S3SyncManager {
       }
     } catch (error) {
       logger.warn('S3SYNC', 'Stale staging sweep failed; leaving work dirs in place', {},
+        error instanceof Error ? error : new Error(String(error)));
+    }
+  }
+
+  /**
+   * Boot-time sweep of pull leftovers, in the same guarded style as
+   * sweepStaleStaging: a sweep failure must never prevent start().
+   *
+   * Ordering note: worker-service.ts applies both pending-restore markers
+   * (applyPendingRestore, then applyPendingChromaRestore — apply-once) BEFORE
+   * the managers are constructed and start() runs. Anything still on disk is
+   * therefore orphaned:
+   * - state/s3sync/chroma-restore-<gen>: a newer pull overwrote the chroma
+   *   marker, so this older staging tree is never swapped in;
+   * - backups/s3sync-incoming/*: download landings; boot means nothing is in
+   *   flight.
+   * The chroma-pre-restore-<ts> trees are different: the boot swap moves the
+   * previous index aside deliberately. They are kept as a bounded history of
+   * the newest 2 (BackupManager's retention philosophy) — unbounded, each
+   * restore would pin another full chroma tree (~1.4 GB) forever.
+   */
+  private sweepPullLeftovers(): void {
+    this.sweepNamedDirs(this.s3syncDir, name => name.startsWith('chroma-restore-'), 0, 'orphaned chroma restore staging');
+    this.sweepNamedDirs(path.join(this.dataDir, 'backups', 's3sync-incoming'), () => true, 0, 'incoming pull downloads');
+    this.sweepNamedDirs(path.dirname(this.chromaDir), name => name.startsWith('chroma-pre-restore-'), 2, 'pre-restore chroma copies');
+  }
+
+  /** Remove matching directories under `parentDir`, keeping only the `keep` newest by name (stamp names sort in time order); never throws. */
+  private sweepNamedDirs(parentDir: string, matches: (name: string) => boolean, keep: number, label: string): void {
+    try {
+      if (!existsSync(parentDir)) return;
+      const stale = readdirSync(parentDir, { withFileTypes: true })
+        .filter(entry => entry.isDirectory() && matches(entry.name))
+        .map(entry => entry.name).sort().reverse()
+        .slice(keep);
+      for (const name of stale) {
+        try {
+          rmSync(path.join(parentDir, name), { recursive: true, force: true });
+        } catch {
+          // A directory that vanished mid-sweep needs no cleanup.
+        }
+      }
+    } catch (error) {
+      logger.warn('S3SYNC', `Sweep of ${label} failed; leaving them in place`, { parentDir },
         error instanceof Error ? error : new Error(String(error)));
     }
   }
@@ -586,7 +633,28 @@ export class S3SyncManager {
     const backupsDir = path.join(this.dataDir, 'backups');
     mkdirSync(backupsDir, { recursive: true });
     const stagedName = `claude-mem-${generation}-from-s3.db`;
-    await gunzipFile(path.join(incomingDir, 'claude-mem.db.gz'), path.join(backupsDir, stagedName));
+    const stagedPath = path.join(backupsDir, stagedName);
+    // Written under a .partial name (outside SNAPSHOT_FILE_PATTERN's `.db$`
+    // anchor) and renamed only once gunzip succeeded, so list, retention and
+    // restore never see a truncated download (BackupManager's snapshot rule).
+    const partialPath = `${stagedPath}.partial`;
+    try {
+      await gunzipFile(path.join(incomingDir, 'claude-mem.db.gz'), partialPath);
+      renameSync(partialPath, stagedPath);
+    } catch (error) {
+      // A leftover .partial never matches SNAPSHOT_FILE_PATTERN, so it is
+      // harmless — but remove what we can instead of leaving litter.
+      for (const leftover of [partialPath, `${partialPath}-wal`, `${partialPath}-shm`, `${partialPath}-journal`]) {
+        if (existsSync(leftover)) {
+          try {
+            unlinkSync(leftover);
+          } catch {
+            // Best effort.
+          }
+        }
+      }
+      throw error;
+    }
     stagePendingRestore(stagedName, path.join(backupsDir, 'restore-pending.json'));
 
     for (const [key, sidecarName] of [['settings.json', 'settings.json.bak-s3sync'], ['env', '.env.bak-s3sync']] as const) {
@@ -658,6 +726,7 @@ export class S3SyncManager {
       lastPushAt: persisted[set].lastPushAt,
       lastGeneration: persisted[set].lastGeneration,
       lastError: persisted[set].lastError,
+      lastPullAt: persisted[set].lastPullAt,
     });
     return {
       configured: true,

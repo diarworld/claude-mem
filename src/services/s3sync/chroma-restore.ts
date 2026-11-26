@@ -23,6 +23,14 @@ export function applyPendingChromaRestore(chromaDir: string, markerPath = paths.
   try {
     pending = readPendingChromaRestore(markerPath);
   } catch (error) {
+    // A marker that cannot be read can never be applied; clear it so the
+    // failure is logged once instead of re-logged on every boot (same
+    // apply-once convention as applyPendingRestore).
+    try {
+      clearPendingChromaRestore(markerPath);
+    } catch (clearError) {
+      logger.error('S3SYNC', 'Could not clear the chroma restore marker', { markerPath }, clearError instanceof Error ? clearError : new Error(String(clearError)));
+    }
     logger.error('S3SYNC', 'Chroma restore marker is unreadable; leaving chroma untouched', { markerPath }, error instanceof Error ? error : new Error(String(error)));
     return { ok: false, error: (error as Error).message, preRestoreDir: null };
   }
@@ -31,7 +39,7 @@ export function applyPendingChromaRestore(chromaDir: string, markerPath = paths.
   const preRestoreDir = path.join(path.dirname(chromaDir), `chroma-pre-restore-${new Date().toISOString().replace(/[:.]/g, '-')}`);
   try {
     if (!existsSync(pending.stagingDir)) throw new Error(`chroma staging dir is missing: ${pending.stagingDir}`);
-    if (existsSync(chromaDir)) renameSync(chromaDir, preRestoreDir);
+    if (existsSync(chromaDir)) renameWithWindowsRetry(chromaDir, preRestoreDir);
     try {
       renameWithWindowsRetry(pending.stagingDir, chromaDir);
     } catch (error) {
