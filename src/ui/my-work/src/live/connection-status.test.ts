@@ -140,7 +140,7 @@ describe('the S3 memory sync row (s3 dimension of the sync payload)', () => {
     lastMergeAt?: number | null
     mergedPeers?: string[] | null
     lastError?: string | null
-  }) => ({ lastMergeAt: null, mergedPeers: null, lastError: null, ...parts })
+  }) => ({ lastMergeAt: null, mergedPeers: null, lastError: null, lastGenerationMerged: null, ...parts })
 
   it('presents the S3 truth for a current merge, keyed by the shared union words', () => {
     const status = getConnectionStatus({ ...live, syncReceivedAt: 99_000,
