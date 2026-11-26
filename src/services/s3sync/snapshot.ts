@@ -19,7 +19,6 @@ export interface SnapshotInput {
   dbPath: string;
   reviewsDbPath: string;
   chromaDir: string;
-  dataDir: string;
   settingsPath: string;
   envPath: string;
   stateDir: string;
@@ -33,19 +32,20 @@ export interface SnapshotEntry {
   bytes: number;
 }
 
-export async function gzipFile(src: string, dst: string): Promise<void> {
-  await pipeline(createReadStream(src), createGzip({ level: 6 }), createWriteStream(dst));
+export async function gzipFile(src: string, dst: string, options: { signal?: AbortSignal } = {}): Promise<void> {
+  await pipeline(createReadStream(src), createGzip({ level: 6 }), createWriteStream(dst), { signal: options.signal });
 }
 
-export async function gunzipFile(src: string, dst: string): Promise<void> {
-  await pipeline(createReadStream(src), createGunzip(), createWriteStream(dst));
+export async function gunzipFile(src: string, dst: string, options: { signal?: AbortSignal } = {}): Promise<void> {
+  await pipeline(createReadStream(src), createGunzip(), createWriteStream(dst), { signal: options.signal });
 }
 
 async function snapshotAndGzip(source: string, workDir: string, key: string, signal?: AbortSignal): Promise<SnapshotEntry> {
-  const raw = path.join(workDir, path.basename(key).replace(/\.gz$/, ''));
-  const gz = path.join(workDir, key.split('/').pop()!);
+  const base = path.basename(key);
+  const raw = path.join(workDir, base.replace(/\.gz$/, ''));
+  const gz = path.join(workDir, base);
   await runSqliteFileJob({ kind: 'snapshot', source, target: raw }, signal);
-  await gzipFile(raw, gz);
+  await gzipFile(raw, gz, { signal });
   unlinkSync(raw);
   return { absolutePath: gz, key, bytes: statSync(gz).size };
 }
@@ -97,8 +97,9 @@ async function copyStable(src: string, dst: string): Promise<void> {
     const before = statSync(src);
     copyFileSync(src, dst);
     const after = statSync(src);
+    // Trusting size+mtime equality: it is the same file's stat read twice around the copy, mtimeMs of identical stat-derived values is exact, and chroma volumes are NTFS/APFS/ext4, not FAT.
     if (before.size === after.size && before.mtimeMs === after.mtimeMs) return;
-    await sleep(250);
+    if (attempt === 0) await sleep(250);
   }
   throw new Error(`chroma index file changed during copy: ${src} (another writer? is the chroma writer lock held?)`);
 }

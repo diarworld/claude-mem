@@ -29,7 +29,6 @@ function makeInput(dir: string): SnapshotInput {
     dbPath: join(dir, 'claude-mem.db'),
     reviewsDbPath: join(dir, 'work-view-reviews.db'),
     chromaDir: join(dir, 'chroma'),
-    dataDir: dir,
     settingsPath: join(dir, 'settings.json'),
     envPath: join(dir, '.env'),
     stateDir: join(dir, 'state'),
@@ -72,5 +71,20 @@ describe('s3 sync snapshot builders', () => {
     const entries = await buildChromaSnapshotSet(join(dir, 'work-c'), input);
     expect(entries.find(e => e.key === 'chroma/chroma.sqlite3.gz')).toBeDefined();
     expect(entries.find(e => e.key === 'chroma/col-1/data_level0.bin')).toBeDefined();
+  });
+
+  test('chroma set without chroma.sqlite3 rejects', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 's3sync-snap-'));
+    const empty = join(dir, 'chroma-empty');
+    mkdirSync(empty, { recursive: true });
+    const input: SnapshotInput = {
+      dbPath: join(dir, 'claude-mem.db'),
+      reviewsDbPath: join(dir, 'work-view-reviews.db'),
+      chromaDir: empty,
+      settingsPath: join(dir, 'settings.json'),
+      envPath: join(dir, '.env'),
+      stateDir: join(dir, 'state'),
+    };
+    await expect(buildChromaSnapshotSet(join(dir, 'work-e'), input)).rejects.toThrow('chroma.sqlite3 not found');
   });
 });
