@@ -56,7 +56,7 @@ function getSetting<K extends keyof SettingsDefaults>(key: K): SettingsDefaults[
   return SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH)[key];
 }
 
-/** How long `install` waits for the tree-sitter CLI download before warning and moving on to sign-in. */
+/** How long `install` waits for the tree-sitter CLI download before warning and moving on. */
 const TREE_SITTER_INSTALL_BUDGET_MS = 2 * 60 * 1000;
 
 /**
@@ -986,7 +986,7 @@ export async function copyPluginToCache(version: string): Promise<void> {
   // older worker must never lose its source directory. It also keeps the
   // newest version whose dependencies are complete: the one just copied has
   // none until "Setting up runtime" installs them, and that step can fail.
-  // Pruning is housekeeping: it runs inside runTasks, before the sign-in/trial
+  // Pruning is housekeeping: it runs inside runTasks, before the provider
   // step, so any failure (a corrupt installed_plugins.json, say) only warns.
   try {
     const pruned = await prunePluginCacheSafely({ additionalProtectedVersions: [version] });
@@ -1266,6 +1266,9 @@ async function bootstrapAndPersistServerApiKey(): Promise<void> {
 
 /** Exported for tests: the provider step of `install` and `update`. */
 export async function promptProvider(options: InstallOptions): Promise<ProviderId> {
+  // Captured by runInstallCommandInner before any settings read could seed the
+  // settings file; a direct call (tests) computes it here instead.
+  const freshInstall = freshProviderInstall ?? isFreshProviderInstall(options);
   const persistedSettings = readPersistedInstallerSettings();
 
   const useSubscriptionAuth = () => {
@@ -1349,10 +1352,11 @@ export async function promptProvider(options: InstallOptions): Promise<ProviderI
   if (selectedProvider === 'openrouter') {
     const persistedNow = readPersistedInstallerSettings();
     if (hasPersonalProviderKey('openrouter', persistedNow)) {
-      // A held key wins. Fill only the empty provider keys with the internal
-      // gateway's endpoint and model (applyGpustackDefaults never overwrites
-      // a held value and never writes the key itself).
-      applyGpustackDefaults(persistedNow);
+      // A held key wins. Fill only the provider keys still at their shipped
+      // defaults with the internal gateway's endpoint and model
+      // (applyGpustackDefaults never overwrites a chosen value and never
+      // writes the key itself).
+      applyGpustackDefaults(persistedNow, freshInstall);
       return 'openrouter';
     }
     // A saved configuration pointing at the cmem gateway with no key is kept
@@ -1378,9 +1382,9 @@ export async function promptProvider(options: InstallOptions): Promise<ProviderI
       // a key is secured, so a cancelled prompt leaves settings as they were.
       throw new Error('Setup cancelled: no GPUStack API key was entered. Run npx claude-mem install again to retry, or pass --provider claude to use your Anthropic plan.');
     }
-    // Key secured: fill the empty provider keys with the gateway defaults and
-    // save the key.
-    applyGpustackDefaults(persistedNow);
+    // Key secured: fill the provider keys still at their shipped defaults with
+    // the gateway defaults and save the key.
+    applyGpustackDefaults(persistedNow, freshInstall);
     if (!mergeSettings({ CLAUDE_MEM_OPENROUTER_API_KEY: String(apiKeyResult).trim() })) {
       throw new Error('Could not save the GPUStack API key.');
     }
@@ -1550,31 +1554,66 @@ async function promptTelemetryOptIn(): Promise<void> {
 
 /**
  * GPUStack fresh-install defaults: the internal model gateway a fresh install
- * runs memory on. Written only into keys that would otherwise stay empty —
- * the environment, ~/.claude-mem/.env and existing non-empty settings always
- * win — and the gateway key is never one of them: it is never hardcoded, only
+ * runs memory on. Written only into keys still empty or still holding the
+ * shipped default — a value this machine chose, an exported environment value
+ * and the gateway key are never touched: the key is never hardcoded, only
  * asked for or read (CLAUDE_MEM_OPENROUTER_API_KEY).
  */
 const GPUSTACK_DEFAULT_BASE_URL = 'https://gpustack.data.lmru.tech/v1';
 const GPUSTACK_DEFAULT_MODEL = 'glm-5.3-flash';
 
+/** The provider keys the GPUStack defaults fill, with their values. */
+const GPUSTACK_DEFAULTS: Record<string, string> = {
+  CLAUDE_MEM_PROVIDER: 'openrouter',
+  CLAUDE_MEM_OPENROUTER_BASE_URL: GPUSTACK_DEFAULT_BASE_URL,
+  CLAUDE_MEM_OPENROUTER_MODEL: GPUSTACK_DEFAULT_MODEL,
+};
+
 /**
- * Fill only the empty provider keys with the GPUStack defaults. mergeSettings
- * replaces values, so each key's current holder is checked first (settings,
- * process.env and ~/.claude-mem/.env — the same lookup hasPersonalProviderKey
- * uses) and it is included only when nothing anywhere would be overwritten.
+ * Whether this run installs onto a machine that has never settled a provider:
+ * no settings.json yet, or setup never completed and no plugin is installed
+ * (an update is never fresh). Read BEFORE any settings read: the first
+ * SettingsDefaultsManager.loadFromFile seeds a missing settings.json with the
+ * shipped defaults — a provider among them — which erases the evidence this
+ * decision needs. Exported for tests; promptProvider falls back to computing
+ * it here when the installer never captured it.
  */
-function applyGpustackDefaults(persisted: Record<string, unknown>): void {
-  // A machine with a persisted provider keeps every provider key as it is,
-  // empty included: the defaults are for a genuinely fresh install only.
-  if (holdsKey(persisted.CLAUDE_MEM_PROVIDER)) return;
-  const credentials = loadClaudeMemEnv() as Record<string, string | undefined>;
-  const held = (name: string): boolean =>
-    holdsKey(persisted[name]) || holdsKey(process.env[name]) || holdsKey(credentials[name]);
+export function isFreshProviderInstall(options: Pick<InstallOptions, 'update'>): boolean {
+  if (options.update) return false;
+  if (!existsSync(USER_SETTINGS_PATH)) return true;
+  const alreadyInstalled = existsSync(join(marketplaceDirectory(), 'plugin', '.claude-plugin', 'plugin.json'));
+  return !alreadyInstalled && readSetupState().status !== 'complete';
+}
+
+/** Captured once at the top of runInstallCommandInner, before any settings read. */
+let freshProviderInstall: boolean | null = null;
+
+/**
+ * Fill the provider keys a fresh install left empty or at their shipped
+ * defaults with the GPUStack values. A value differing from the shipped
+ * default was chosen on this machine and is never overwritten, an exported
+ * environment value always wins and is never copied to disk, and the gateway
+ * key is never one of the written keys.
+ *
+ * The ~/.claude-mem/.env leg of the usual key lookups is absent on purpose:
+ * that file holds only unprefixed credential names (OPENROUTER_API_KEY, not
+ * CLAUDE_MEM_OPENROUTER_BASE_URL), so none of these keys can ever be set
+ * there and checking it would be dead code.
+ */
+function applyGpustackDefaults(persisted: Record<string, unknown>, freshInstall: boolean): void {
+  if (!freshInstall) return;
+  const shipped = SettingsDefaultsManager.getAllDefaults();
   const updates: Record<string, string> = {};
-  if (!held('CLAUDE_MEM_PROVIDER')) updates.CLAUDE_MEM_PROVIDER = 'openrouter';
-  if (!held('CLAUDE_MEM_OPENROUTER_BASE_URL')) updates.CLAUDE_MEM_OPENROUTER_BASE_URL = GPUSTACK_DEFAULT_BASE_URL;
-  if (!held('CLAUDE_MEM_OPENROUTER_MODEL')) updates.CLAUDE_MEM_OPENROUTER_MODEL = GPUSTACK_DEFAULT_MODEL;
+  for (const [name, value] of Object.entries(GPUSTACK_DEFAULTS)) {
+    // An environment value wins without being copied to disk.
+    if (holdsKey(process.env[name])) continue;
+    const current = persisted[name];
+    const atShippedDefault = typeof current === 'string'
+      && current.trim() === String(shipped[name as keyof SettingsDefaults] ?? '').trim();
+    // Empty, or still the shipped default the settings seeder wrote: writable.
+    if (holdsKey(current) && !atShippedDefault) continue;
+    updates[name] = value;
+  }
   if (Object.keys(updates).length === 0) return;
   if (!mergeSettings(updates)) return;
   log.info(`Configured the internal model gateway (GPUStack): ${Object.keys(updates).sort().join(', ')}.`);
@@ -1613,7 +1652,7 @@ export interface InstallOptions {
 
 /**
  * How the installer reacts when the worker port is not free. This runs before
- * the sign-in/trial step, which the install must still reach, so it aborts only
+ * the provider step, which the install must still reach, so it aborts only
  * when a live claude-mem worker demonstrably holds the port: the verified owner
  * of the PID file, the worker the stop targeted, is still alive. Its in-memory
  * configuration would outlive the overwrite. A port some other process holds,
@@ -1696,7 +1735,7 @@ export async function overwriteWithWorkerStopped(
   }
   if (!releaseSpawnLock) {
     // Only a holder that keeps refreshing the lock (another install running
-    // now) gets here. Aborting is not an option before sign-in, so overwrite
+    // now) gets here. Aborting is not an option this early, so overwrite
     // and say how to recover if a worker started from the half-copied files.
     installerError(ErrorSeverity.WARN_CONTINUE, {
       component: 'worker-shutdown',
@@ -1788,7 +1827,7 @@ export async function requireWorkerStopped(
     // The stop itself failed, so decide from the ownership record alone: a
     // live, verified worker on this port must not have its files overwritten;
     // with none, nothing shows a claude-mem worker holds the port, and the
-    // install must still reach sign-in.
+    // install must still reach the provider step.
     const owner = readOwnedWorkerOnPort(port, deps.readOwnedWorker ?? readOwnedWorkerPidInfo);
     if (owner) {
       const failure = workerShutdownFailure({ kind: 'worker-still-running', pid: owner.pid }, port);
@@ -1924,20 +1963,21 @@ export function validateNonInteractiveProvider(
 
   if (options.provider === 'host') return;
   if (options.provider !== 'gemini' && options.provider !== 'openrouter') return;
-  const keyName = options.provider === 'gemini'
-    ? 'CLAUDE_MEM_GEMINI_API_KEY'
-    : 'CLAUDE_MEM_OPENROUTER_API_KEY';
-  const key = String(getSetting(keyName as keyof SettingsDefaults) ?? '').trim();
-  const configuredCmemKey = options.provider === 'openrouter'
-    && isCmemGatewayUrl(String(getSetting('CLAUDE_MEM_OPENROUTER_BASE_URL') ?? ''));
-  if (!key || configuredCmemKey) {
+  // The worker reads the key from settings.json, the environment and
+  // ~/.claude-mem/.env, so all three count here — a key held only in .env, or
+  // only in the rotation pool, must not abort a run whose remediation names
+  // .env. A saved cmem gateway configuration keeps its key in settings.json
+  // by design (the gateway ignores an exported key), so its check stays
+  // persisted-only via missingProviderKey's tuple lock.
+  const missing = missingProviderKey(options.provider, readPersistedInstallerSettings());
+  if (missing) {
     installerError(ErrorSeverity.ABORT, {
       component: 'provider-credentials',
       phase: 'non-interactive-validation',
       cause: new Error(`${options.provider} requires a preconfigured personal API key when stdin is not interactive.`),
       remediation: options.provider === 'openrouter'
         ? 'Set CLAUDE_MEM_OPENROUTER_API_KEY (env or ~/.claude-mem/.env) or pass --provider claude.'
-        : `Save ${keyName} first, or run the installer in an interactive terminal so it can ask securely.`,
+        : `Save ${missing.keyName} first, or run the installer in an interactive terminal so it can ask securely.`,
     }, summary);
   }
 }
@@ -2120,6 +2160,11 @@ export async function runInstallCommand(options: InstallOptions = {}): Promise<v
 }
 
 async function runInstallCommandInner(options: InstallOptions, summary: InstallSummary): Promise<void> {
+  // Before any settings read (see isFreshProviderInstall): later reads seed a
+  // missing settings.json with the shipped defaults and erase the evidence
+  // the GPUStack defaults decision needs.
+  freshProviderInstall = isFreshProviderInstall(options);
+
   // Explicit host/runtime incompatibility must refuse before provider getters,
   // runtime settings persistence, or server API-key bootstrap.
   if (options.ide && options.runtime !== undefined) {
@@ -2308,7 +2353,7 @@ async function runInstallCommandInner(options: InstallOptions, summary: InstallS
             writeInstallMarker(cacheDir, version, bunVersion, uvVersion);
           }
           // Installs run with lifecycle scripts suppressed, so tree-sitter-cli's
-          // own download never ran (#2910). This runs before the sign-in/trial
+          // own download never ran (#2910). This runs before the provider
           // step, so a failure only warns and a stalled download is cut off at
           // TREE_SITTER_INSTALL_BUDGET_MS; `npx claude-mem repair` retries it
           // with the full dependency timeout.
@@ -2721,8 +2766,9 @@ async function runInstallCommandInner(options: InstallOptions, summary: InstallS
       healthSpinner?.stop(`Worker not yet responding on port ${workerPort} (still starting)`);
     }
 
-    // A sign-in just wrote cloud-sync settings the worker booted with, so
-    // one cheap read of /api/sync/status confirms sync is really configured.
+    // Cloud-sync settings the worker booted with may predate this run (saved
+    // by an older install), so one cheap read of /api/sync/status confirms
+    // sync is really configured.
     // Purely informational and fail-soft — a warming worker legitimately
     // can't answer yet, and the state is always visible via the cloud-sync skill.
     if (cloudSyncConfigured && workerReady) {
@@ -2796,7 +2842,7 @@ async function runInstallCommandInner(options: InstallOptions, summary: InstallS
     `Memory injection starts on your second session in a project.`,
     cloudSyncConfigured
       ? 'Saved memories sync across your connected agents and devices.'
-      : `Everything stays in ${styleText('cyan', '~/.claude-mem')} on this machine. Nothing is sent anywhere (telemetry is separate: npx claude-mem telemetry).`,
+      : `Everything stays in ${styleText('cyan', '~/.claude-mem')} on this machine. Memory runs on the internal model gateway; nothing is sent to external services (telemetry is separate: npx claude-mem telemetry).`,
     ``,
     `${styleText('dim', `Optional: ${'/learn-codebase'} ingests a whole repo up front (~5 min)   ·   How it works: /how-it-works`)}`,
   ];

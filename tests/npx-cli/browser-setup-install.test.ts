@@ -697,17 +697,17 @@ describe('update keeps completed setup and asks only for missing requirements', 
     provision({});
     await runInstallCommand({ update: true });
     // No provider menu any more: an interactive run with no provider goes to
-    // the internal model gateway, applies the GPUStack defaults and asks for
-    // the missing key in the terminal.
+    // the internal model gateway and asks for the missing key in the terminal.
     expect(questions).toEqual(['Paste your GPUStack API key:']);
     expect(setupRequests).toEqual([]);
     expect(opened).toEqual([]);
-    expect(readSettings()).toMatchObject({
-      CLAUDE_MEM_PROVIDER: 'openrouter',
-      CLAUDE_MEM_OPENROUTER_BASE_URL: 'https://gpustack.data.lmru.tech/v1',
-      CLAUDE_MEM_OPENROUTER_MODEL: 'glm-5.3-flash',
-      CLAUDE_MEM_OPENROUTER_API_KEY: 'new-provider-key',
-    });
+    // Completed setup is a chosen machine: an update saves only the key it
+    // asked for and never rewrites the provider keys — the GPUStack defaults
+    // are for machines that never finished setup (isFreshProviderInstall).
+    expect(readSettings()).toMatchObject({ CLAUDE_MEM_OPENROUTER_API_KEY: 'new-provider-key' });
+    expect(readSettings().CLAUDE_MEM_PROVIDER).toBeUndefined();
+    expect(readSettings().CLAUDE_MEM_OPENROUTER_BASE_URL).toBeUndefined();
+    expect(readSettings().CLAUDE_MEM_OPENROUTER_MODEL).toBeUndefined();
   });
 });
 

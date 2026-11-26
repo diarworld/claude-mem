@@ -4,12 +4,13 @@ import { describe, expect, it } from 'bun:test';
 import { mkdtempSync, rmSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
+import { SettingsDefaultsManager } from '../../src/shared/SettingsDefaultsManager.js';
 
 // The GPUStack fresh-install defaults: a fresh openrouter install (the default
 // path, the grok-bot implicit choice, or an explicit --provider openrouter)
-// fills only the empty provider keys with the internal gateway's endpoint and
-// model, asks for the missing key locally, and never touches a machine that
-// already holds a provider or a key.
+// fills only the provider keys still empty or still at the shipped defaults
+// with the internal gateway's endpoint and model, asks for the missing key
+// locally, and never touches a machine that already chose a provider or a key.
 //
 // Every case runs in its own Bun process: the TTY flag and the password prompt
 // are decided at import time (and bun test shares one process across files, so
@@ -17,6 +18,12 @@ import { join } from 'path';
 // it reads and writes no real settings.json or ~/.claude-mem/.env.
 
 const repoRoot = join(import.meta.dir, '..', '..');
+
+// The shipped defaults the settings seeder writes on first read, read from the
+// source so these tests track them: a fresh install overwrites these values,
+// anything else counts as chosen on the machine.
+const SHIPPED_PROVIDER = SettingsDefaultsManager.getAllDefaults().CLAUDE_MEM_PROVIDER;
+const SHIPPED_MODEL = SettingsDefaultsManager.getAllDefaults().CLAUDE_MEM_OPENROUTER_MODEL;
 
 interface CaseSpec {
   tty?: boolean;
@@ -26,6 +33,10 @@ interface CaseSpec {
   passwordAnswer?: string | null;
   /** 'promptProvider' (default) or 'validate' — which exported step drives the case. */
   step?: 'promptProvider' | 'validate';
+  /** Seed the shipped defaults the way a claude-mem settings read does mid-run. */
+  seed?: 'load' | 'write';
+  /** A setup-state.json body to place in the data dir before the run. */
+  setupState?: Record<string, unknown>;
 }
 
 interface CaseResult {
@@ -53,6 +64,22 @@ function runCase(spec: CaseSpec): CaseResult {
       if (spec.settings !== undefined) {
         fs.mkdirSync(path.dirname(settingsPath), { recursive: true });
         fs.writeFileSync(settingsPath, JSON.stringify(spec.settings, null, 2));
+      }
+      if (spec.setupState !== undefined) {
+        fs.mkdirSync(process.env.CLAUDE_MEM_DATA_DIR, { recursive: true });
+        fs.writeFileSync(path.join(process.env.CLAUDE_MEM_DATA_DIR, 'setup-state.json'), JSON.stringify(spec.setupState, null, 2));
+      }
+      const settingsManagerPath = ${JSON.stringify(join(repoRoot, 'src', 'shared', 'SettingsDefaultsManager.js'))};
+      if (spec.seed === 'load') {
+        // What any claude-mem settings read does on a machine with no
+        // settings.json yet: the manager creates it with the shipped defaults.
+        const { SettingsDefaultsManager } = await import(settingsManagerPath);
+        SettingsDefaultsManager.loadFromFile(settingsPath);
+      } else if (spec.seed === 'write') {
+        // A settings.json that a previous claude-mem command already seeded.
+        const { SettingsDefaultsManager } = await import(settingsManagerPath);
+        fs.mkdirSync(path.dirname(settingsPath), { recursive: true });
+        fs.writeFileSync(settingsPath, JSON.stringify(SettingsDefaultsManager.getAllDefaults(), null, 2));
       }
       for (const [key, value] of Object.entries(spec.env ?? {})) process.env[key] = value;
       const passwordCalls: string[] = [];
@@ -162,5 +189,68 @@ describe('GPUStack fresh-install defaults', () => {
     expect(result.provider).toBe('claude');
     expect(result.passwordCalls).toEqual([]);
     expect(result.settings).toEqual(settings);
+  });
+
+  it('a machine with no settings.json gets the defaults despite the mid-run settings seed', () => {
+    // The reviewer's empirical scenario: any settings read (here the manager's
+    // loadFromFile, as the installer's own reads do) seeds a missing
+    // settings.json with the shipped defaults — a provider among them — before
+    // the provider step runs. The defaults must still land on top of it.
+    const result = runCase({ tty: true, seed: 'load', passwordAnswer: 'gpustack-key' });
+    expect(result.error).toBeUndefined();
+    expect(result.provider).toBe('openrouter');
+    expect(result.passwordCalls).toEqual(['Paste your GPUStack API key:']);
+    expect(result.settings).toMatchObject({
+      CLAUDE_MEM_PROVIDER: 'openrouter',
+      CLAUDE_MEM_OPENROUTER_BASE_URL: GPUSTACK_URL,
+      CLAUDE_MEM_OPENROUTER_MODEL: GPUSTACK_MODEL,
+      CLAUDE_MEM_OPENROUTER_API_KEY: 'gpustack-key',
+    });
+  });
+
+  it('a seeded settings.json on a setup-incomplete machine is still a fresh install', () => {
+    // No plugin installed, setup never completed: the machine never chose a
+    // provider, so the seeded shipped defaults are replaced like empties.
+    const result = runCase({ tty: true, seed: 'write', passwordAnswer: 'gpustack-key' });
+    expect(result.error).toBeUndefined();
+    expect(result.provider).toBe('openrouter');
+    expect(result.passwordCalls).toEqual(['Paste your GPUStack API key:']);
+    expect(result.settings).toMatchObject({
+      CLAUDE_MEM_PROVIDER: 'openrouter',
+      CLAUDE_MEM_OPENROUTER_BASE_URL: GPUSTACK_URL,
+      CLAUDE_MEM_OPENROUTER_MODEL: GPUSTACK_MODEL,
+      CLAUDE_MEM_OPENROUTER_API_KEY: 'gpustack-key',
+    });
+  });
+
+  it('a completed-setup machine keeps the shipped defaults and gains only the pasted key', () => {
+    const result = runCase({
+      tty: true, seed: 'write',
+      setupState: { status: 'complete', choice: null, installer: null, checkout: null, tools: null, completedAt: 'earlier' },
+      passwordAnswer: 'gpustack-key',
+    });
+    expect(result.error).toBeUndefined();
+    expect(result.passwordCalls).toEqual(['Paste your GPUStack API key:']);
+    expect(result.settings).toMatchObject({
+      CLAUDE_MEM_PROVIDER: SHIPPED_PROVIDER,
+      CLAUDE_MEM_OPENROUTER_MODEL: SHIPPED_MODEL,
+      CLAUDE_MEM_OPENROUTER_API_KEY: 'gpustack-key',
+    });
+  });
+
+  it('an update run never applies the defaults, even with no provider configured', () => {
+    const result = runCase({
+      tty: true, seed: 'write',
+      options: { provider: 'openrouter', providerSource: 'flag', update: true },
+      passwordAnswer: 'gpustack-key',
+    });
+    expect(result.error).toBeUndefined();
+    expect(result.provider).toBe('openrouter');
+    expect(result.passwordCalls).toEqual(['Paste your GPUStack API key:']);
+    expect(result.settings).toMatchObject({
+      CLAUDE_MEM_PROVIDER: SHIPPED_PROVIDER,
+      CLAUDE_MEM_OPENROUTER_MODEL: SHIPPED_MODEL,
+      CLAUDE_MEM_OPENROUTER_API_KEY: 'gpustack-key',
+    });
   });
 });
