@@ -192,7 +192,7 @@ type FakeWorker = ReturnType<typeof fakeWorker>;
  * writes a frame, `drop` ends every stream so the page's EventSource reconnects), telemetry, and the storage choice,
  * applied the way the installer answers. Every request is recorded. Nothing here reaches a real worker or cmem.ai.
  */
-function fakeWorker(setupChanges: object = {}, scanChanges: object = {}) {
+function fakeWorker(setupChanges: object = {}, scanChanges: object = {}, timing: { choiceStageDelayMs?: number } = {}) {
   const requests: Array<{ method: string; path: string; body: any }> = [];
   const streams = new Set<ReadableStreamDefaultController<Uint8Array>>();
   const encoder = new TextEncoder();
@@ -239,8 +239,16 @@ function fakeWorker(setupChanges: object = {}, scanChanges: object = {}) {
     if (route === 'POST /api/setup/telemetry') return Response.json({ ok: true });
     if (route === 'POST /api/setup/choice') {
       // The home-only funnel: the choice is applied at once, the way the installer answers — `home-kept-existing`
-      // where the machine's existing configuration is kept, `home-ready` on a fresh one.
-      reportSetup({ choice: body, installer: { stage: state().alreadyPro ? 'home-kept-existing' : 'home-ready' } });
+      // where the machine's existing configuration is kept, `home-ready` on a fresh one. `choiceStageDelayMs`
+      // holds the applied report back the way a real installer does when it answers on a later poll: the choice
+      // is saved and served at once, the stage lands only after the delay.
+      const applied = { installer: { stage: state().alreadyPro ? 'home-kept-existing' : 'home-ready' } };
+      if (timing.choiceStageDelayMs) {
+        reportSetup({ choice: body });
+        setTimeout(() => reportSetup(applied), timing.choiceStageDelayMs);
+      } else {
+        reportSetup({ choice: body, ...applied });
+      }
       return Response.json(state());
     }
     return Response.json({ error: `The fake worker has no ${route}.` }, { status: 404 });
@@ -610,4 +618,28 @@ async function install(page: SetupWalk) {
     expect(worker.choices()).toHaveLength(1);
   }, worker);
 // About 8s: no scan to wait for, one answer, a reconnect and a 2s wait; 60s allows a slow shared runner.
+}, 60_000);
+
+(chromeExecutablePath ? it : it.skip)('a Back press inside the applied-report window strands nothing: the landing stage moves the interstitial on, with no second answer', async () => {
+  // The installer reports the applied stage on a later poll than the choice POST, so a Back press from Finish
+  // Setup can land inside that window: the interstitial stands in for the choice screen, the once-guard holds
+  // (choiceEdited), and the restore path holds (choiceContinued). Without the applied-report exit the interstitial
+  // would sit there with no forward control until a reload.
+  const worker = fakeWorker(undefined, undefined, { choiceStageDelayMs: 5_000 });
+  await withSetupPage('', { width: 1440, height: 900, phone: false }, async page => {
+    await page.atStep('reveal');
+    await page.press('.setup-actions .primary', 'Continue');
+    // The interstitial answered, the page is on Finish Setup, and the applied stage has not landed yet.
+    await page.atStep('finish-setup');
+    expect(worker.choices()).toEqual([{ branch: 'home', memoryBilling: 'existing' }]);
+    // Back into the window: the interstitial is up with no forward control.
+    await page.press('.setup-back');
+    await page.atStep('choice');
+    // The applied report lands while the interstitial is up: the page moves forward on its own and sends nothing.
+    await page.atStep('finish-setup');
+    expect(worker.choices()).toHaveLength(1);
+    expect(worker.posts()).toEqual(['/api/setup/choice']);
+    expect(worker.state().installer).toEqual({ stage: 'home-kept-existing' });
+  }, worker);
+// About 12s: no scan to wait for, one answer, a 5s-held report and the walk between; 60s allows a slow shared runner.
 }, 60_000);

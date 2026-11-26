@@ -252,6 +252,16 @@ export default function SetupPage({ onComplete }: { onComplete: () => void }) {
     void submitChoice('home')
   })
 
+  // The interstitial has no forward control of its own, and the once-guard above must not re-POST: when the
+  // installer's applied report lands while it stands in for the choice screen — a Back press inside the report
+  // window, or an answer the worker took but this page never heard back — the page moves on to Finish Setup the
+  // same way the restore path sends a reload of an applied machine. A `failed` stage never exits (Retry setup owns
+  // that screen), and without an applied report nothing moves: the sent answer's own success already did.
+  useEffect(() => {
+    if (step !== 'choice' || !flow.alreadyPro || !choiceApplied) return
+    update({ revealContinued: true, choiceContinued: true, finishTools: initialTools() }, 'finish-setup')
+  })
+
   // A failed handoff can restart its installer and retry the current choice from this page.
   const installerFailed = data.installer?.stage === 'failed'
   const [retryingSetup, setRetryingSetup] = useState(false)
