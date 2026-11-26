@@ -7,8 +7,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 ## [16.1.5] - 2026-11-26
 
 - **Installing claude-mem no longer contacts cmem.ai.** The sign-in, the trial checkout, the waitlist and the email question are gone from install and update: setup runs entirely on this computer and nothing is sent anywhere while it runs. The one flow that still signs in to cmem.ai is `npx claude-mem teambrain join`, which joins a team from an invite link.
-- **Fresh installs default to the internal model gateway (GPUStack)** — an OpenRouter-compatible endpoint on this machine, asking only for its API key. `--provider claude` keeps the local Anthropic plan, and explicit `--provider` flags still work.
+- **Fresh installs default to the internal model gateway (GPUStack)** — an OpenRouter-compatible endpoint on this machine, asking only for its API key. The browser setup's home choice lands on the same gateway defaults as a terminal install (the key is asked for in the terminal while the browser waits), `--provider claude` keeps the local Anthropic plan, and explicit `--provider` flags still work.
 - **Browser setup is a single home funnel** (`install → scan → reveal → choice → finish-setup → launch → workspace`): the hosted branch with its checkout and savings screens is removed, and Finish Setup's tool guidance points at the local stdio MCP server instead of the hosted URL.
+- **The setup scan no longer offers to upload your prompts to cmem.ai.** The scan reads the last 30 days of conversations on this computer, and when the worker holds the scan for an upload choice the setup page declines it for everyone: nothing leaves this machine.
 - **Reinstalling keeps an existing working configuration.** A machine that already has a working provider and keys answers the choice itself and keeps them, instead of asking to sign up again.
 
 ## [Unreleased]

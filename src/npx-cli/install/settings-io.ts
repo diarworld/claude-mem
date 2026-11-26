@@ -14,7 +14,8 @@ import { updateSettingsDocument } from '../../shared/settings-document.js';
  * wrapper and its root peers survive). An unreadable file is no longer reset
  * to `{}`: it is moved aside to `settings.json.corrupt-<epoch-ms>` (the user's
  * bytes are kept) and a fresh document is written, so a corrupt file can never
- * stop setup or drop the sign-in's memory key. Returns false only when the
+ * stop setup or lose the provider configuration the installer just saved
+ * (the gateway key among it). Returns false only when the
  * write itself fails; the worker and hooks refuse-and-report instead. The
  * boundary writes settings.json owner-only from the first byte (it can carry
  * the CMEM Pro setup token and provider API keys).

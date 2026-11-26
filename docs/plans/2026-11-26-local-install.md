@@ -266,10 +266,17 @@ In-src tests (setup-flow.test.ts, setup-telemetry.test.ts) + tests/ui/my-work/* 
 
 ## Verification checklist (definition of done)
 
+> Ruling, 2026-11-26 (final cross-task review): Task 2 Step 3's funnel-home-choice
+> GPUStack default won over this checklist's earlier "completes with provider
+> claude" line — the funnel fresh path applies the GPUStack defaults exactly
+> like the terminal one (design 4a). The scan's cmem.ai upload offer was also
+> removed the same day: the page declines the worker's upload hold for
+> everyone, so the scan stays local-only.
+
 - [ ] `npm run typecheck` clean (root + viewer)
 - [ ] `npm test` fast lane: no NEW failures vs the 197-fail Windows baseline
 - [ ] `npm run build` + bundles committed
-- [ ] Fresh interactive install: only `http://127.0.0.1:<port>/?setup=1` opens; choosing the single card completes with provider claude
+- [ ] Fresh interactive install: only `http://127.0.0.1:<port>/?setup=1` opens; choosing the single card ends on the internal model gateway (GPUStack defaults + the key asked for locally)
 - [ ] Reinstall on the live machine: existing openrouter/gateway config untouched (stage `home-kept-existing`)
 - [ ] Non-interactive install with network blackholed for cmem.ai: completes
 - [ ] `claude-mem teambrain join` still compiles and its tests pass (pairing.ts preserved)
