@@ -4,6 +4,13 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [16.1.5] - 2026-11-26
+
+- **Installing claude-mem no longer contacts cmem.ai.** The sign-in, the trial checkout, the waitlist and the email question are gone from install and update: setup runs entirely on this computer and nothing is sent anywhere while it runs. The one flow that still signs in to cmem.ai is `npx claude-mem teambrain join`, which joins a team from an invite link.
+- **Fresh installs default to the internal model gateway (GPUStack)** — an OpenRouter-compatible endpoint on this machine, asking only for its API key. `--provider claude` keeps the local Anthropic plan, and explicit `--provider` flags still work.
+- **Browser setup is a single home funnel** (`install → scan → reveal → choice → finish-setup → launch → workspace`): the hosted branch with its checkout and savings screens is removed, and Finish Setup's tool guidance points at the local stdio MCP server instead of the hosted URL.
+- **Reinstalling keeps an existing working configuration.** A machine that already has a working provider and keys answers the choice itself and keeps them, instead of asking to sign up again.
+
 ## [Unreleased]
 
 - **S3 Sync: snapshot your memory database, vector index and configuration to an own S3-compatible bucket.** Opt-in (`CLAUDE_MEM_S3_SYNC_ENABLED: "true"` plus a bucket name) and hub-free: the worker pushes the db set (memory database, settings, rules, worker state, optionally `.env`) every 6 hours and the chroma vector index every 24 hours, with the first run about 5 minutes after worker start. Snapshots are generation-stamped, gzipped, SHA-256-verified on pull, and pruned to the newest 5 generations per set.

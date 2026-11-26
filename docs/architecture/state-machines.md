@@ -39,7 +39,7 @@ what the program does at run time.
 | --- | --- | --- |
 | Worker boot phase | `InitPhase` in `src/services/server/init-phase.ts` | the tracker, its one writer, and the `/api/ready` stream |
 | Auto-clear phase | `Phase` in `src/mods/auto-clear/controller.ts` | the controller, its one writer |
-| Setup flow: branch, billing, installer stage, checkout, scan phase, history import | `src/shared/setup-funnel.ts` | installer, worker files and request checks, setup page |
+| Setup flow: branch, billing, installer stage, scan phase, history import | `src/shared/setup-funnel.ts` | installer, worker files and request checks, setup page |
 | Dependency status and its wording | `DEPENDENCY_STATUS_LABELS` in `src/shared/dependency-health.ts` | `claude-mem status`, `claude-mem doctor` |
 | Which work-state statuses close an item | `isClosedWorkStateStatus` in `src/services/work-view/work-state-status.mjs` | SessionStart section, work-state tool replies, My Work, owner-goals readers, the write route |
 | Refresh run state | `WorkViewRefreshState` in `src/ui/my-work/src/live/work-view-api-types.ts` | every My Work screen that shows a run |

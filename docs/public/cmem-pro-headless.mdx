@@ -5,7 +5,7 @@ description: "What npx claude-mem install writes for CMEM Pro — OAuth pairing,
 
 # CMEM Pro (manual / headless)
 
-Use this when you already have a [cmem.ai](https://cmem.ai) account and need to wire CMEM Pro without the interactive installer (CI, a second machine, or a box you SSH into). The usual path is still [`npx claude-mem install`](/installation).
+Use this when you have a [cmem.ai](https://cmem.ai) account and need to wire CMEM Pro by hand (CI, a second machine, or a box you SSH into), or when you want the contract of the pairing a `teambrain join` runs. `npx claude-mem install` itself stays local: it no longer signs in to cmem.ai, offers a trial, or asks for an email.
 
 <Warning>
 Never paste real `cm_pro_…` keys, setup tokens, or OpenRouter `sk-or-` keys into chat, tickets, or docs. The examples below are placeholders only. Keep `~/.claude-mem/settings.json` mode `0600`.
@@ -13,14 +13,16 @@ Never paste real `cm_pro_…` keys, setup tokens, or OpenRouter `sk-or-` keys in
 
 ## What the installer does
 
-Three stages:
+Two stages, with no cmem.ai account step:
 
 1. **Runtime** — Bun/uv if needed, IDE plugin files, worker deps.
-2. **Sign in** — skipped for `--provider claude`, and for non-interactive runs without `--provider` (fresh install defaults to claude; an existing config keeps its provider). A non-interactive install that skipped sign-in prints an optional sign-in link as its last line; agents should show that link to the user rather than open it. Local installs send cmem.ai only your email and optional note (with the claude-mem version and OS) if you share them when an interactive terminal install asks, and a numbers-only usage summary (observation counts and token totals, no prompts, paths, or project names) when setup creates a sign-in link; nothing else is sent to cmem.ai unless you choose to upload your prompts during browser setup. The email question is asked once, optionally, and only by interactive terminal installs: non-TTY (agent-run) installs, installs with `CI` set, and `CLAUDE_MEM_ONLINE_OPTIN=false` skip it. Sign-in itself never asks for an email:
-   - `POST https://cmem.ai/api/installer/oauth/start` with `{ source: "npx-installer", device_name: <hostname>, install_state: "fresh" | "update", usage_summary?: { window_days: 28, active_days, observations, memory_tokens, days: [{ d: "YYYY-MM-DD", obs, tokens }] } }` (`usage_summary` is omitted when no local data can be read)
+2. **Provider** — a fresh install defaults to the internal OpenRouter-compatible gateway (GPUStack) and asks for its key; `--provider claude` keeps the local Anthropic plan; an existing working configuration is kept as it is. Nothing is sent to cmem.ai during install — no sign-in, no checkout, no usage summary. The email question and the numbers-only usage summary of older releases are gone with them.
+
+The OAuth pairing client that used to sign the installer in now serves one flow: `npx claude-mem teambrain join <invite-link>`, which joins a TeamBrain team through the same pairing:
+
+   - `POST https://cmem.ai/api/installer/oauth/start` with `{ source: "teambrain_join", device_name: <hostname>, team_invite: <token> }`
    - prints a device code `XXXX-XXXX` and opens `authorization_url`
-   - polls `https://cmem.ai/api/pro/trial/poll` until authenticated
-3. **Provider** — **CMEM Pro is pre-selected.** Choosing it opens `checkout_url` (trial/claim), polls until `status: "ready"`, then writes settings and restarts the worker.
+   - polls `https://cmem.ai/api/pro/trial/poll` until the device is approved and the join completes; the ready answer delivers the sync connection (and observer keys only when the account carries them), and a refused join answers `join_failed` with the server's reason
 
 `--provider openrouter` with a **personal** key is a different path: empty `CLAUDE_MEM_OPENROUTER_BASE_URL` (or `https://openrouter.ai/api/v1`). Never send a personal `sk-or-` key to `https://cmem.ai/api/inference`.
 
@@ -39,8 +41,8 @@ Credentials are **staged**, then **activated**. File: `~/.claude-mem/settings.js
 | `CLAUDE_MEM_CLOUD_SYNC_DEVICE_NAME` | hostname |
 | `CLAUDE_MEM_PRO_TRIAL_STATE` | `active` |
 | `CLAUDE_MEM_PRO_TRIAL_ENDS_AT` | `trial.ends_at` or `""` |
-| `CLAUDE_MEM_PRO_PLAN` | `trial` / `pro` / `none` |
-| `CLAUDE_MEM_PRO_MEMORY_KEY` | `memory_key`, or `setup_token` if omitted |
+| `CLAUDE_MEM_PRO_PLAN` | `trial` / `pro` / `none` / `teambrain_seat` / `cloud_sync` |
+| `CLAUDE_MEM_PRO_MEMORY_KEY` | `memory_key`; a poll without one is a sync-only account and writes no Pro keys |
 | `CLAUDE_MEM_PRO_MEMORY_BASE_URL` | `memory_base_url`, or `https://cmem.ai/api/inference/v1` |
 | `CLAUDE_MEM_PRO_MEMORY_MODEL` | `memory_model`, or `cmem-observer` |
 | `CLAUDE_MEM_PRO_FALLBACK_AT` | `""` |
@@ -70,7 +72,7 @@ Keep the cloud-sync trio from staging. `memory_key` and `setup_token` are often 
 
 ## Manual recipe (you already have tokens)
 
-1. From **cmem.ai → Connect** (or an installer pairing), copy `setup_token`, `user_id`, `hub_url`, and `memory_key` (if missing, use `setup_token`).
+1. From **cmem.ai → Connect** (or a `teambrain join` pairing), copy `setup_token`, `user_id`, `hub_url`, and `memory_key` (if missing, use `setup_token`).
 2. Merge staged + activated keys into `~/.claude-mem/settings.json`. Placeholders only:
 
 ```json
@@ -127,6 +129,6 @@ Never send a personal OpenRouter key to the cmem gateway.
 
 ## Next steps
 
-- [Installation](/installation) — interactive three-stage installer
+- [Installation](/installation) — the local installer (no account step)
 - [Cloud Sync](/cloud-sync) — what the sync trio replicates
 - [OpenRouter provider](/usage/openrouter-provider) — personal OpenRouter keys (not cmem.ai)
