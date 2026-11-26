@@ -100,12 +100,26 @@ describe('the API agent talks to the selected provider', () => {
     expect(calls[0].body.response_format).toEqual({ type: 'json_schema', json_schema: { name: 'answer', schema, strict: false } });
   });
 
-  it('refuses an answer the provider cut off at the token limit instead of returning it', async () => {
-    // A truncated JSON answer must fail loudly, never reach the step's validators half-written.
-    const { calls } = fakeFetch([{ body: { choices: [{ finish_reason: 'length', message: { content: '{"narrative": "The record holds' } }] } }]);
-    await expect(askApiTarget(target(), 'the question')).rejects.toThrow(/finish reason: length/);
-    expect(calls.length).toBe(1);
+  it('retries an answer the provider cut off at the token limit once, with a brevity instruction', async () => {
+    // A truncated answer never reaches the step's validators; a step answer that long is a
+    // looped model, so the question is asked once more, fresh, asking for a short answer.
+    const { calls } = fakeFetch([
+      { body: { choices: [{ finish_reason: 'length', message: { content: '{"narrative": "The record holds' } }] } },
+      { body: { choices: [{ message: { content: 'the answer' } }] } },
+    ]);
+    expect(await askApiTarget(target(), 'the question')).toBe('the answer');
+    expect(calls.length).toBe(2);
     expect(calls[0].body.max_tokens).toBe(16_000);
+    expect(String(calls[0].body.messages[0].content)).not.toContain('never repeat yourself');
+    expect(String(calls[1].body.messages[0].content)).toContain('never repeat yourself');
+    expect(calls[1].body.max_tokens).toBe(16_000);
+  });
+
+  it('fails with the answer-limit words when the brevity retry is cut off too', async () => {
+    const cutOff = { body: { choices: [{ finish_reason: 'length', message: { content: '{"narrative": "The record holds' } }] } };
+    const { calls } = fakeFetch([cutOff, cutOff]);
+    await expect(askApiTarget(target(), 'the question')).rejects.toThrow(/finish reason: length/);
+    expect(calls.length).toBe(2);
   });
 
   it('turns off Bun\'s fetch idle timeout, so a long silent answer runs to the request deadline', async () => {
