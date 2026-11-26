@@ -269,7 +269,11 @@ export class SetupScan {
     void this.localExtraction!().then(
       ok => this.settleOrganizing(scanStartedAt, ok ? null : ORGANIZING_STOPPED_REASON),
       error => this.settleOrganizing(scanStartedAt, error instanceof Error ? error.message : String(error)),
-    );
+      // A settle that throws (a scan listener failing during update) must not become an unhandled
+      // rejection: the blocking path this replaced was covered by run()'s try/catch, this one is not.
+    ).catch(error => {
+      logger.warn('IMPORT', 'An organizing settle failed', { error: error instanceof Error ? error.message : String(error) });
+    });
   }
 
   /**
