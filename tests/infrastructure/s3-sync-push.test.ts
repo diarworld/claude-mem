@@ -208,4 +208,27 @@ describe('s3 sync push pipeline', () => {
     expect(outcome).not.toBeNull();
     expect(s3.objects.has('claude-mem-sync/testbox/db/LATEST')).toBe(true);
   });
+
+  test("runNow('all') reports a combined outcome when both sets push", async () => {
+    const dir = mkdtempSync(join(tmpdir(), 's3sync-push-'));
+    makeFixture(dir);
+    mkdirSync(join(dir, 'chroma'), { recursive: true });
+    const chroma = new Database(join(dir, 'chroma', 'chroma.sqlite3'));
+    chroma.exec('CREATE TABLE embeddings (id INTEGER PRIMARY KEY)');
+    chroma.close();
+    const s3 = new FakeS3();
+    const manager = makeManager(dir, s3);
+    const outcome = await manager.runNow('all');
+    expect(outcome!.set).toBe('all');
+    // uploaded sums both sets: cross-check against what FakeS3 actually received
+    const dbUploads = s3.order.filter(k => k.startsWith('up:claude-mem-sync/testbox/db/')).length;
+    const chromaUploads = s3.order.filter(k => k.startsWith('up:claude-mem-sync/testbox/chroma/')).length;
+    expect(outcome!.uploaded).toBe(dbUploads + chromaUploads);
+    expect(outcome!.bytes).toBeGreaterThan(0);
+    expect(s3.objects.has('claude-mem-sync/testbox/db/LATEST')).toBe(true);
+    expect(s3.objects.has('claude-mem-sync/testbox/chroma/LATEST')).toBe(true);
+    // the printed generation is the db set's — the memory db is the primary artifact
+    const dbLatest = parseLatestMarker(s3.objects.get('claude-mem-sync/testbox/db/LATEST')!.toString());
+    expect(outcome!.generation).toBe(dbLatest?.generation);
+  });
 });

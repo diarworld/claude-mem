@@ -53,7 +53,8 @@ export interface S3SyncManagerOptions {
 }
 
 export interface S3SyncPushOutcome {
-  set: S3SyncSet;
+  /** 'all' only on the combined runNow('all') outcome; a per-set push names its set. */
+  set: S3SyncSet | 'all';
   generation: string;
   uploaded: number;
   bytes: number;
@@ -383,14 +384,23 @@ export class S3SyncManager {
    * CLAUDE_MEM_S3_SYNC_INCLUDE_CHROMA=false (the route answers 400 — "busy"
    * and "gated" must not share a status). 'all' keeps the scheduled path's
    * semantics: a gated chroma is silently skipped, because the caller asked
-   * for everything that is pushable, not for chroma specifically.
+   * for everything that is pushable, not for chroma specifically. When both
+   * sets push, the outcome is combined (uploaded/bytes/pruned summed; the
+   * printed generation is the db's — the memory db is the primary artifact).
    */
   async runNow(set: S3SyncSet | 'all'): Promise<S3SyncPushOutcome | null> {
     if (this.stopped) throw new Error('S3 sync manager stopped');
     if (set === 'all') {
       const db = await this.pushSet('db');
       const chroma = this.chromaEnabled() ? await this.pushSet('chroma') : null;
-      return db ?? chroma;
+      if (!db || !chroma) return db ?? chroma;
+      return {
+        set: 'all',
+        generation: db.generation, // the memory db is the primary artifact
+        uploaded: db.uploaded + chroma.uploaded,
+        bytes: db.bytes + chroma.bytes,
+        pruned: [...db.pruned, ...chroma.pruned],
+      };
     }
     if (set === 'chroma' && !this.chromaEnabled()) {
       throw new Error('chroma sync is disabled by CLAUDE_MEM_S3_SYNC_INCLUDE_CHROMA=false');
