@@ -1,4 +1,4 @@
-import { describe, expect, test, afterEach } from 'bun:test';
+import { describe, expect, test, afterEach, mock } from 'bun:test';
 import { Database } from 'bun:sqlite';
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -7,6 +7,33 @@ import { S3SyncManager } from '../../src/services/s3sync/S3SyncManager.js';
 import type { ChromaSyncLike } from '../../src/services/sync/SyncApply.js';
 import type { S3Transport } from '../../src/services/s3sync/s3-transport.js';
 import { SessionStore } from '../../src/services/sqlite/SessionStore.js';
+import { ChromaSyncState } from '../../src/services/sync/ChromaSyncState.js';
+import * as realChromaMcpManager from '../../src/services/sync/ChromaMcpManager.js';
+
+// Chroma handoff pin (Task 5): the REAL ChromaSync forwarder is exercised
+// end-to-end — only its MCP transport layer is mocked (the in-memory harness
+// from tests/services/sync/chroma-sync-watermarks.test.ts). The mocked
+// module is file-wide, which is safe here: nothing else in this file talks to
+// the chroma MCP (the push pipeline reads chroma dir files directly, and the
+// Task 4 stub-forwarder tests never reach the real manager).
+void realChromaMcpManager;
+let acceptChromaWrites = true;
+mock.module('../../src/services/sync/ChromaMcpManager.js', () => ({
+  ChromaMcpManager: {
+    getInstance: () => ({
+      acceptsMutations: () => true,
+      callTool: async (toolName: string) => {
+        if (toolName === 'chroma_add_documents' && !acceptChromaWrites) {
+          throw new Error('chroma unavailable (test)');
+        }
+        return {};
+      },
+    }),
+  },
+}));
+
+const ChromaSyncModule = await import('../../src/services/sync/ChromaSync.js');
+const ChromaSync = ChromaSyncModule.ChromaSync;
 
 const NOW = 1764000000000;
 
@@ -107,6 +134,30 @@ function clearWatermark(dir: string, peerRoot: string): void {
   writeFileSync(statePath, JSON.stringify(state), 'utf-8');
 }
 
+// --- chroma handoff (Task 5) ----------------------------------------------
+// ChromaSyncState derives its file from CLAUDE_MEM_DATA_DIR per call; redirect
+// it per test (the chroma-sync-watermarks.test.ts pattern) so the real
+// forwarder's bump/pending writes land in a per-test state file.
+const chromaStateDirs: string[] = [];
+let previousDataDir: string | undefined;
+
+function useChromaStateDir(prefix: string): void {
+  if (previousDataDir === undefined) previousDataDir = process.env.CLAUDE_MEM_DATA_DIR;
+  const dir = mkdtempSync(join(tmpdir(), prefix));
+  chromaStateDirs.push(dir);
+  process.env.CLAUDE_MEM_DATA_DIR = dir;
+  ChromaSyncState.resetCacheForTests();
+}
+
+/** The chroma forwarder runs fire-and-forget after applyOps's commit — poll for the observable outcome. */
+async function waitForOutcome(predicate: () => boolean, what: string): Promise<void> {
+  for (let i = 0; i < 250; i++) {
+    if (predicate()) return;
+    await new Promise(resolve => setTimeout(resolve, 20));
+  }
+  throw new Error(`timed out waiting for ${what}`);
+}
+
 function makeManager(
   dir: string,
   transport: S3Transport,
@@ -174,6 +225,21 @@ describe('s3 sync merge tick', () => {
         // assertions above already ran, and the OS reaps its temp dir.
       }
     }
+    // Chroma handoff tests: restore the process-wide data dir and drop the
+    // per-test chroma state so the retry record cannot leak across tests.
+    ChromaSyncState.resetCacheForTests();
+    if (previousDataDir !== undefined) {
+      process.env.CLAUDE_MEM_DATA_DIR = previousDataDir;
+      previousDataDir = undefined;
+    }
+    for (const dir of chromaStateDirs.splice(0)) {
+      try {
+        rmSync(dir, { recursive: true, force: true, maxRetries: 20, retryDelay: 50 });
+      } catch {
+        // Same GC-pressure tolerance as above.
+      }
+    }
+    acceptChromaWrites = true;
   });
 
   test('convergence: A pushes 2 observations, B merges them as replica rows attributed to A', async () => {
@@ -445,6 +511,69 @@ describe('s3 sync merge tick', () => {
     expect(chroma.observationIds).toEqual(
       (b.db.prepare('SELECT id FROM observations ORDER BY id').all() as Array<{ id: number }>).map(row => row.id),
     );
+  });
+
+  // --- Task 5: chroma handoff, pinned at the ChromaSyncState level ---------
+  // The REAL ChromaSync (DatabaseManager.ts:109 construction shape) is wired
+  // as the forwarder; only its MCP transport is mocked in memory.
+
+  test('chroma handoff: the real forwarder covers merged ids with a watermark bump', async () => {
+    useChromaStateDir('s3sync-chroma-ok-');
+    const s3 = new FakeS3();
+    const a = makeDevice('a');
+    insertSession(a.db, 'mem-a-1', 'content-a-1');
+    insertObservation(a.db, 'mem-a-1', 'alpha');
+    insertObservation(a.db, 'mem-a-1', 'beta');
+    const managerA = makeManager(a.dir, s3, { device: 'device-a' });
+    await managerA.runNow('db');
+
+    const b = makeDevice('b');
+    const chroma = new ChromaSync('claude-mem');
+    const managerB = makeManager(b.dir, s3, { device: 'device-b', db: b.db, chromaSync: chroma });
+    expect(await managerB.mergeNow()).toEqual({ peers: [{ peer: 'device-a', outcome: 'merged', applied: 2 }] });
+    const ids = (b.db.prepare('SELECT id FROM observations ORDER BY id').all() as Array<{ id: number }>).map(row => row.id);
+
+    // Success path (ChromaSync.syncObservation): full write → clearPending +
+    // bump — the ids are covered by the per-project watermark, so the next
+    // incremental sweep skips them (already embedded), and any sweep that
+    // selects `id > watermark` sees nothing missing.
+    await waitForOutcome(
+      () => ChromaSyncState.get('demo').observations >= Math.max(...ids),
+      'the project watermark to advance past the merged ids',
+    );
+    expect(ChromaSyncState.get('demo').observations).toBe(Math.max(...ids));
+    expect(ChromaSyncState.getPending('demo', 'observations')).toEqual([]);
+  });
+
+  test('chroma handoff: a failed chroma write marks merged ids pending, which the sweep re-embeds below the watermark', async () => {
+    useChromaStateDir('s3sync-chroma-fail-');
+    acceptChromaWrites = false; // the MCP layer rejects → addDocuments returns written 0
+    const s3 = new FakeS3();
+    const a = makeDevice('a');
+    insertSession(a.db, 'mem-a-1', 'content-a-1');
+    insertObservation(a.db, 'mem-a-1', 'alpha');
+    insertObservation(a.db, 'mem-a-1', 'beta');
+    const managerA = makeManager(a.dir, s3, { device: 'device-a' });
+    await managerA.runNow('db');
+
+    const b = makeDevice('b');
+    const chroma = new ChromaSync('claude-mem');
+    const managerB = makeManager(b.dir, s3, { device: 'device-b', db: b.db, chromaSync: chroma });
+    expect(await managerB.mergeNow()).toEqual({ peers: [{ peer: 'device-a', outcome: 'merged', applied: 2 }] });
+    const ids = (b.db.prepare('SELECT id FROM observations ORDER BY id').all() as Array<{ id: number }>).map(row => row.id).sort((x, y) => x - y);
+
+    // Partial/failure path: the watermark must NOT advance (a bump here would
+    // skip the rows for good — #3917); they are recorded pending instead.
+    // backfillObservations selects pending ids BY ID regardless of the
+    // watermark (ChromaSync.ts ~2144-2166), so ids BELOW the watermark are
+    // re-embedded by the next sweep — exactly the below-watermark coverage
+    // Task 5 was written to verify.
+    await waitForOutcome(
+      () => ChromaSyncState.getPending('demo', 'observations').length === ids.length,
+      'pending marks for the merged ids',
+    );
+    expect(ChromaSyncState.getPending('demo', 'observations')).toEqual(ids);
+    expect(ChromaSyncState.get('demo').observations).toBe(0);
   });
 });
 
