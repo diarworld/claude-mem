@@ -102,6 +102,52 @@ async function runStatus(): Promise<void> {
     console.log(`    Next run:       ${fmtTime(s.nextRunAt)}`);
     if (s.lastError) console.log(`    Last error:     ${styleText('red', String(s.lastError))}`);
   }
+  // The multi-device merge dimension (S3SyncManager.status().merge, S3 Sync
+  // v2). Rendered only when the payload carries it: a disabled worker answers
+  // {configured: false} above, and an older worker omits the field — either
+  // way this output changes nothing for it.
+  const merge = data.merge as {
+    peers: string[] | null;
+    mergedGenerations: Record<string, string>;
+    mergeState: Record<string, { state: string; applied: number; lastMergeAt: number; lastError: string | null }>;
+  } | undefined;
+  if (merge) {
+    console.log(styleText('bold', '\n  Merge'));
+    if (merge.peers === null) {
+      // Discovery has not run in this boot (lastMergePeers is a runtime
+      // field) — also the shape of every tick under the Cloud Sync
+      // exclusivity refusal, which records nothing. mergeState, being
+      // persisted, may still hold earlier outcomes; both facts render.
+      console.log('    Peers: not discovered yet');
+    } else if (merge.peers.length === 0) {
+      console.log('    Peers: none');
+    }
+    const states = Object.entries(merge.mergeState ?? {}).sort(([a], [b]) => a.localeCompare(b));
+    if (states.length === 0) {
+      // Peers known but no recorded outcome: an interrupted tick.
+      if (merge.peers !== null && merge.peers.length > 0) console.log('    No merges recorded');
+    } else {
+      for (const [peer, entry] of states) {
+        // The watermark is the peer's last LATEST generation stamp — the same
+        // identifier `s3sync push` prints, so the two outputs correlate.
+        const generation = merge.mergedGenerations?.[peer];
+        const watermark = generation ? `, generation ${generation}` : '';
+        const at = fmtTime(entry.lastMergeAt);
+        if (entry.state === 'ok') {
+          console.log(`    ${peer}: ok — ${entry.applied} applied, last merge ${at}${watermark}`);
+        } else if (entry.state === 'skipped') {
+          // A watermark-backed skip is the converged steady state; even
+          // without one, a skip is activity, never called a merge.
+          console.log(`    ${peer}: skipped — last activity ${at}${watermark}`);
+        } else if (entry.state === 'error') {
+          console.log(`    ${peer}: error — ${styleText('red', String(entry.lastError ?? 'unknown error'))}, last attempt ${at}`);
+        } else {
+          // phaseLabel convention: a state this CLI does not know passes through raw.
+          console.log(`    ${peer}: ${entry.state} — last activity ${at}`);
+        }
+      }
+    }
+  }
   console.log(`\nPush now with: ${styleText('bold', 'npx claude-mem s3sync push')}`);
 }
 

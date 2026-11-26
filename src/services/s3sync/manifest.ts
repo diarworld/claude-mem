@@ -27,6 +27,14 @@ export interface S3SyncManifest {
   generation: string;
   createdAt: number;
   device: string;
+  /**
+   * The pushing device's sync identity (S3 Sync v2): peers tag merged rows
+   * with it as op.origin_device, so attribution is stable across device
+   * renames and never conflated with the sanitized bucket prefix above.
+   * Optional only for manifests written before S3 Sync v2 — the merge side
+   * refuses peers whose manifest omits it rather than fork attribution.
+   */
+  syncIdentity?: string;
   /** chroma set only: the db generation this index is consistent with. */
   pairedDbGeneration?: string;
   files: S3SyncManifestFile[];
@@ -51,6 +59,28 @@ export function isValidGenerationStamp(generation: string): boolean {
 
 export function deviceRoot(device: string): string {
   return `${S3_SYNC_ROOT}/${sanitizeDeviceName(device)}`;
+}
+
+/**
+ * The distinct peer device-root SEGMENTS in a complete key listing under the
+ * sync root — the second path segment of every key, `ownDeviceSegment`
+ * excluded, sorted. The segment is the sanitized device NAME (what
+ * `deviceRoot(device)` embeds), NOT the full `claude-mem-sync/<device>` root
+ * and NOT a sync identity. Device names are sanitized, so the segment
+ * comparison is exact. Keys that carry no second segment (the bare root key,
+ * empty strings) and keys outside the sync root yield nothing; deeper keys
+ * still name their device — a device root always carries `<set>/…` below it,
+ * so any segment count works.
+ */
+export function peersFromKeys(keys: readonly string[] | null | undefined, ownDeviceSegment: string): string[] {
+  const peers = new Set<string>();
+  for (const key of keys ?? []) {
+    const parts = key.split('/');
+    // [claude-mem-sync, <device>, …]
+    if (parts[0] === S3_SYNC_ROOT && parts[1]) peers.add(parts[1]);
+  }
+  peers.delete(ownDeviceSegment);
+  return [...peers].sort();
 }
 
 export function setPrefix(device: string, set: S3SyncSet): string {

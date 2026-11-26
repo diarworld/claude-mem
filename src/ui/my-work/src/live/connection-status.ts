@@ -1,4 +1,5 @@
 import { presentSync, type SyncPresentation, type SyncStatusForDisplay } from '../../../viewer/utils/sync-presentation.ts'
+import type { ViewerS3SyncState, ViewerS3SyncStatus } from '../../../../shared/viewer-sync-status.js'
 
 // Typed copy of claude-mem v15.0.1 plugin/ui/work-view/live-status.js (getConnectionStatus).
 // Connection freshness is measured on the browser's monotonic clock. Server
@@ -21,7 +22,8 @@ export interface ConnectionStatusInput {
   staleAfterMs?: number
   /** Where the page is served: the worker on this computer, or the cloud viewer that pulls your synced devices. */
   where?: 'local' | 'cloud'
-  sync?: SyncStatusForDisplay | null
+  /** The worker's sync evidence; the S3 Sync v2 dimension rides inside it (s3). */
+  sync?: (SyncStatusForDisplay & { s3?: ViewerS3SyncStatus | null }) | null
   syncReceivedAt?: number | null
   activityCheckedAt?: string | null
   activityAgeAtReceipt?: number | null
@@ -44,11 +46,72 @@ export interface ConnectionStatus {
   tooltip: string
   /** Separately measured upstream synchronization; feed liveness does not imply this is current. */
   sync?: SyncPresentation
+  /** The S3 memory sync dimension (S3 Sync v2); null when S3 Sync is off, in which case the popover renders the Cloud copy row as today. */
+  s3?: S3SyncPresentation | null
 }
 
 function age(now: number, at: number | null): number | null {
   if (at === null || !Number.isFinite(now) || !Number.isFinite(at) || now < 0 || at < 0 || at > now + 1000) return null
   return Math.max(0, now - at)
+}
+
+// --- The S3 memory sync row (S3 Sync v2) ------------------------------------
+
+/**
+ * The S3 merge dimension's row words, ONE table keyed by the shared union
+ * (imported from src/shared/viewer-sync-status.js — never re-typed here), so a
+ * future state fails the typecheck until it is worded here. The words are the
+ * i18n source strings: `t()` reads them.
+ */
+export const S3_SYNC_STATE_WORDS: Record<ViewerS3SyncState, { label: string; tone: ConnectionTone }> = {
+  current: { label: 'Current', tone: 'positive' },
+  // A steady, explainable state, not a problem: enabled and waiting for the
+  // first merge (or for any device to push a snapshot). Never a chip problem.
+  stale: { label: 'Waiting for the first merge', tone: 'neutral' },
+  error: { label: 'Merge error', tone: 'warning' },
+}
+
+/** The memory sync row's presentation: the row's state words plus the raw evidence the popover composes with. */
+export interface S3SyncPresentation {
+  state: ViewerS3SyncState
+  label: string
+  tone: ConnectionTone
+  /** The deciding outcome's time (epoch ms). In 'stale' this is the last ACTIVITY, not a merge. */
+  lastMergeAt: number | null
+  /** The last discovery's peer snapshot; null = never discovered (the row says so distinctly from an empty list). */
+  mergedPeers: string[] | null
+  /** The worker's most recent peer error (error state); rendered raw in the Details fold. */
+  lastError: string | null
+}
+
+/**
+ * The S3 dimension rides in the worker's sync payload (recordSync keeps the
+ * whole object after isSyncStatus). A payload without it, or with a state the
+ * shared union does not name (a new state must be worded in
+ * S3_SYNC_STATE_WORDS first, so this is unreachable for known states), leaves
+ * the field null and the popover renders today's Cloud copy row.
+ *
+ * Design priority (docs/plans/2026-11-26-s3-sync-v2-merge-design.md): the row
+ * shows whichever transport is REAL. When Cloud Sync is configured, the S3
+ * merge refuses before discovery — mergedPeers stays null and 'stale' is a
+ * permanent refusal, not a wait. That both-configured misconfiguration is a
+ * docs matter, and the truthful row is the Cloud copy that IS syncing, so the
+ * refusal shape yields the row back to cloud. A stale with discovered peers
+ * (or an error) is the S3 dimension's own truth and stays.
+ */
+function presentS3Sync(sync: (SyncStatusForDisplay & { s3?: ViewerS3SyncStatus | null }) | null | undefined): S3SyncPresentation | null {
+  const s3 = sync?.s3;
+  if (!s3 || typeof s3.state !== 'string' || !(s3.state in S3_SYNC_STATE_WORDS)) return null
+  if (sync?.configured && s3.state === 'stale' && s3.mergedPeers === null) return null
+  const words = S3_SYNC_STATE_WORDS[s3.state]
+  return {
+    state: s3.state,
+    label: words.label,
+    tone: words.tone,
+    lastMergeAt: typeof s3.lastMergeAt === 'number' && Number.isFinite(s3.lastMergeAt) ? s3.lastMergeAt : null,
+    mergedPeers: Array.isArray(s3.mergedPeers) ? s3.mergedPeers : null,
+    lastError: typeof s3.lastError === 'string' ? s3.lastError : null,
+  }
 }
 
 function checkTime(value: unknown): string | null {
@@ -139,5 +202,6 @@ export function getConnectionStatus({
     + 'Connection status does not indicate an agent is running.'
   return { state, label, detail, tone, isLive: state === 'live', eventAgeMs, sourceAgeMs,
     lastSuccessfulCheckAt: successfulCheckAt, activityCheckedAt: checkTime(activityCheckedAt), clockSkew, staleAfterMs: threshold, tooltip,
-    sync: presentSync(sync, syncReceivedAt, now) }
+    sync: presentSync(sync, syncReceivedAt, now),
+    s3: presentS3Sync(sync) }
 }

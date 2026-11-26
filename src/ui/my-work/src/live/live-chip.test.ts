@@ -4,6 +4,7 @@ import { describe, it } from 'node:test'
 import { getConnectionStatus, type ConnectionStatusInput } from './connection-status.ts'
 import { LIVE_CHIP_PROBLEMS, liveChipProblem } from './live-chip.ts'
 import type { SyncStatusForDisplay } from '../../../viewer/utils/sync-presentation.ts'
+import type { ViewerS3SyncStatus } from '../../../../shared/viewer-sync-status.js'
 
 const NOW = 1_000_000
 const CHECKED_AT = new Date(Date.UTC(2026, 10, 16, 2, 9, 24)).toISOString()
@@ -46,6 +47,31 @@ describe('the Live chip', () => {
     assert.equal(liveChipProblem(behind, REFUSED), 'sharing-refused')
   })
 
+  it('names a memory-sync merge error after refused sharing, before the cloud copy', () => {
+    const errorS3: ViewerS3SyncStatus = { state: 'error', lastMergeAt: NOW, mergedPeers: ['device-a'], lastError: 'boom', lastGenerationMerged: null }
+    const memoryError = { ...sync('current'), s3: errorS3 }
+    assert.equal(liveChipProblem(connection({ sync: memoryError, syncReceivedAt: NOW }), FINE), 'memory-error')
+    // A merge error outranks the cloud copy falling behind: the Memory sync row
+    // is the row the person reads when it is present.
+    assert.equal(liveChipProblem(connection({ sync: memoryError, syncReceivedAt: NOW }), FINE), 'memory-error' as const)
+    const bothBehind = { ...sync('offline'), s3: { ...errorS3, mergedPeers: null } }
+    assert.equal(liveChipProblem(connection({ sync: bothBehind, syncReceivedAt: NOW }), FINE), 'memory-error')
+  })
+
+  it('memory sync that is current or stale is never a chip problem — stale is a steady, explainable state', () => {
+    const currentS3: ViewerS3SyncStatus = { state: 'current', lastMergeAt: NOW, mergedPeers: ['device-a'], lastError: null, lastGenerationMerged: null }
+    const staleS3: ViewerS3SyncStatus = { state: 'stale', lastMergeAt: NOW, mergedPeers: null, lastError: null, lastGenerationMerged: null }
+    assert.equal(liveChipProblem(connection({ sync: { ...sync('current'), s3: currentS3 }, syncReceivedAt: NOW }), FINE), null)
+    assert.equal(liveChipProblem(connection({ sync: { ...sync('unconfigured'), configured: false, s3: staleS3 } }), null), null,
+      's3 waiting for its first merge beside a cloud that is off is not a problem')
+  })
+
+  it('without an s3 dimension the chip behaves exactly as today', () => {
+    assert.equal(liveChipProblem(connection({ sync: sync('catching-up'), syncReceivedAt: NOW }), FINE), 'cloud-behind')
+    assert.equal(liveChipProblem(connection({ sync: sync('current'), syncReceivedAt: NOW }), FINE), null)
+    assert.equal(liveChipProblem(connection({ sync: { ...sync('unconfigured'), configured: false } }), null), null)
+  })
+
   it('puts the page’s own feed first: without it nothing on screen is current', () => {
     const cloudBehind = { sync: sync('offline'), syncReceivedAt: NOW }
     assert.equal(liveChipProblem(connection({ ...cloudBehind, sourceConnected: false }), REFUSED), 'feed-unavailable')
@@ -77,6 +103,8 @@ describe('the Live chip', () => {
       liveChipProblem(connection({ transportConnected: false, lastEventAt: null }), null),
       liveChipProblem(connection({}), REFUSED),
       liveChipProblem(connection({ sync: sync('stale'), syncReceivedAt: NOW }), null),
+      liveChipProblem(connection({ sync: { ...sync('current'),
+        s3: { state: 'error', lastMergeAt: NOW, mergedPeers: null, lastError: 'boom', lastGenerationMerged: null } }, syncReceivedAt: NOW }), null),
     ])
     assert.deepEqual([...named].sort(), [...LIVE_CHIP_PROBLEMS].sort())
   })

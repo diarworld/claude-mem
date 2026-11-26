@@ -127,3 +127,96 @@ describe('cloud viewer feed status', () => {
   })
 })
 
+describe('the S3 memory sync row (s3 dimension of the sync payload)', () => {
+  /** A wire `sync` payload like the worker sends, with an s3 dimension attached. */
+  const cloudSync = (state: 'unconfigured' | 'current') => ({
+    configured: state !== 'unconfigured', state, mode: 'polling' as const, observedAt: 100_000,
+    checkedAt: state === 'unconfigured' ? null : 99_000, message: `Cloud sync is ${state}.`,
+    download: { lastSuccessAt: state === 'unconfigured' ? null : 99_000 }, projection: { remaining: null },
+    completeness: { pushQuarantine: 0, pullQuarantine: 0, excludedNative: 0, scope: 'eligible' as const },
+  })
+  const s3 = (parts: {
+    state: 'current' | 'stale' | 'error'
+    lastMergeAt?: number | null
+    mergedPeers?: string[] | null
+    lastError?: string | null
+  }) => ({ lastMergeAt: null, mergedPeers: null, lastError: null, lastGenerationMerged: null, ...parts })
+
+  it('presents the S3 truth for a current merge, keyed by the shared union words', () => {
+    const status = getConnectionStatus({ ...live, syncReceivedAt: 99_000,
+      sync: { ...cloudSync('current'), s3: s3({ state: 'current', lastMergeAt: 90_000, mergedPeers: ['device-a', 'device-b'] }) } })
+    assert.deepEqual(status.s3, {
+      state: 'current', label: 'Current', tone: 'positive',
+      lastMergeAt: 90_000, mergedPeers: ['device-a', 'device-b'], lastError: null,
+    })
+  })
+
+  it('presents stale with its two distinct sub-cases: never discovered vs discovered-none-pushed', () => {
+    const neverDiscovered = getConnectionStatus({ ...live, syncReceivedAt: 99_000,
+      sync: { ...cloudSync('unconfigured'), s3: s3({ state: 'stale', lastMergeAt: 90_000, mergedPeers: null }) } })
+    assert.equal(neverDiscovered.s3?.label, 'Waiting for the first merge')
+    assert.equal(neverDiscovered.s3?.tone, 'neutral')
+    assert.equal(neverDiscovered.s3?.mergedPeers, null)
+    assert.equal(neverDiscovered.s3?.lastMergeAt, 90_000)
+
+    const discoveredNone = getConnectionStatus({ ...live, syncReceivedAt: 99_000,
+      sync: { ...cloudSync('unconfigured'), s3: s3({ state: 'stale', lastMergeAt: 90_000, mergedPeers: [] }) } })
+    assert.deepEqual(discoveredNone.s3?.mergedPeers, [])
+    assert.equal(discoveredNone.s3?.label, 'Waiting for the first merge')
+  })
+
+  it('presents an error with the worker error in tow, warning tone', () => {
+    const status = getConnectionStatus({ ...live, syncReceivedAt: 99_000,
+      sync: { ...cloudSync('current'), s3: s3({ state: 'error', lastMergeAt: 95_000,
+        lastError: 'downloaded file does not match the manifest: claude-mem.db.gz' }) } })
+    assert.equal(status.s3?.state, 'error')
+    assert.equal(status.s3?.tone, 'warning')
+    assert.equal(status.s3?.lastError, 'downloaded file does not match the manifest: claude-mem.db.gz')
+  })
+
+  it('keeps the s3 row even when cloud sync is unconfigured — the owner’s complaint never renders again', () => {
+    // s3 enabled + cloud unconfigured: the sync row is the Memory sync row
+    // (bits.tsx renders it instead of the Cloud copy row), so "cloud sync is
+    // disabled" has no row to appear in. The presentation coexists honestly.
+    const status = getConnectionStatus({ ...live, syncReceivedAt: 99_000,
+      sync: { ...cloudSync('unconfigured'), s3: s3({ state: 'current', lastMergeAt: 90_000, mergedPeers: ['device-a'] }) } })
+    assert.equal(status.sync?.label, 'Cloud sync off')
+    assert.equal(status.s3?.state, 'current')
+  })
+
+  it('yields the row back to cloud when Cloud Sync is configured and s3 shows the refusal shape', () => {
+    // Both configured: the merge refuses before discovery (mergedPeers null,
+    // mergeState empty, forever) — 'stale' is a permanent refusal, not a
+    // wait, and the truthful row is the Cloud copy that IS syncing.
+    const status = getConnectionStatus({ ...live, syncReceivedAt: 99_000,
+      sync: { ...cloudSync('current'), s3: s3({ state: 'stale', lastMergeAt: 90_000, mergedPeers: null }) } })
+    assert.equal(status.sync?.label, 'Cloud data current')
+    assert.equal(status.s3, null)
+  })
+
+  it('keeps the s3 row under a configured cloud when s3 has its own evidence (error)', () => {
+    // The refusal suppression is shape-specific: an s3 ERROR is the S3
+    // dimension's own truth even beside a configured cloud.
+    const status = getConnectionStatus({ ...live, syncReceivedAt: 99_000,
+      sync: { ...cloudSync('current'), s3: s3({ state: 'error', lastMergeAt: 95_000,
+        lastError: 'downloaded file does not match the manifest: claude-mem.db.gz' }) } })
+    assert.equal(status.s3?.state, 'error')
+    assert.equal(status.s3?.lastError, 'downloaded file does not match the manifest: claude-mem.db.gz')
+  })
+
+  it('without an s3 dimension the presentation is null and the cloud row is byte-identical to today', () => {
+    const status = getConnectionStatus({ ...live, syncReceivedAt: 99_000, sync: cloudSync('current') })
+    assert.equal(status.s3, null)
+    // The exact pre-change words for the same cloud input (golden) — presentSync
+    // joins the state sentence with the delivery-mode sentence.
+    assert.deepEqual({ label: status.sync?.label, tone: status.sync?.tone, detail: status.sync?.detail, isCurrent: status.sync?.isCurrent },
+      { label: 'Cloud data current', tone: 'positive', detail: 'Cloud sync is current. Mode: HTTP polling.', isCurrent: true })
+  })
+
+  it('treats an unknown wire state as no evidence rather than inventing words for it', () => {
+    const status = getConnectionStatus({ ...live, syncReceivedAt: 99_000,
+      sync: { ...cloudSync('current'), s3: { state: 'mystery', lastMergeAt: 1, mergedPeers: null, lastError: null } as never } })
+    assert.equal(status.s3, null)
+  })
+})
+

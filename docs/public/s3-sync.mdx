@@ -10,8 +10,10 @@ own** — for example Yandex Object Storage. It is built into the worker:
 **there is no daemon — the worker pushes on a schedule**. There is no hub and
 no account: the bucket is the other side.
 
-It is a **backup and restore** feature, not a merge engine:
-the newest generation wins, per device. See [Safety and limits](#safety-and-limits).
+It is a **backup and restore** feature — a pull or restore replaces local
+state with the newest generation, per device — **and it merges across your
+devices**: machines that share a bucket converge automatically, with no hub
+and no account (see [Multi-device merge](#multi-device-merge)).
 
 <Warning>
 **Snapshots are plaintext.** Everything uploaded — including your settings and
@@ -82,6 +84,7 @@ are read from `~/.claude-mem/.env` only.
 | `CLAUDE_MEM_S3_SYNC_DEVICE` | `''` | Bucket prefix for this machine. **Empty = `os.hostname()`.** See [Restore on a new machine](#restore-on-a-new-machine). |
 | `CLAUDE_MEM_S3_SYNC_DB_INTERVAL_HOURS` | `'6'` | db set push cadence in hours. Non-positive or garbage values fall back to the default. |
 | `CLAUDE_MEM_S3_SYNC_CHROMA_INTERVAL_HOURS` | `'24'` | chroma set push cadence in hours. Non-positive or garbage values fall back to the default. |
+| `CLAUDE_MEM_S3_SYNC_MERGE_INTERVAL_MINUTES` | `'60'` | Multi-device merge cadence in minutes (see [Multi-device merge](#multi-device-merge)). Unset or empty means the default. `0` disables merging; an invalid value also disables it — an untrusted interval is never read as the default. |
 | `CLAUDE_MEM_S3_SYNC_INCLUDE_CHROMA` | `'true'` | `'false'` disables the chroma set: scheduled pushes skip it silently, an explicit `s3sync push --set chroma` answers `400`, an explicit `s3sync pull --set chroma` fails the same way, and a pull of `all` stages only the db set (its chroma entry reports `skipped` with that reason). |
 | `CLAUDE_MEM_S3_SYNC_INCLUDE_ENV` | `'true'` | Whether `.env` (which holds your **plaintext** S3 keys and any other secrets) travels with the db set. Set `'false'` to exclude it. |
 | `CLAUDE_MEM_S3_SYNC_KEEP_GENERATIONS` | `'5'` | Generations kept per set in the bucket; older ones are pruned after each successful push. |
@@ -94,7 +97,9 @@ transport and the restore staging.
 
 - **`s3sync status`** — bucket, endpoint and device, then per set: phase,
   last push, last pull, current generation, next scheduled run, and the last
-  error if any.
+  error if any. When multi-device merge is on, a **Merge** block follows: the
+  discovered peers, each peer's last outcome, and the generation watermarks
+  (see [Multi-device merge](#multi-device-merge)).
 - **`s3sync push [--set db|chroma|all]`** — push now. Default is `all`, which
   reports the combined uploaded object count and bytes (the printed
   generation is the db set's). When a push is already running the command
@@ -170,6 +175,71 @@ replaces what the other just uploaded. Set a stable, distinct
 hostname fallback if machine names can collide or change).
 </Warning>
 
+## Multi-device merge
+
+Devices that share a bucket **converge automatically**: an observation
+recorded on any device appears on the others — through your own bucket, with
+no hub and no account. There is no command to run; the worker merges on a
+schedule.
+
+**How a merge works.** On its schedule the worker lists the bucket's device
+roots, downloads each peer's newest db snapshot — every file verified against
+the manifest's SHA-256 hashes exactly like a pull — converts its observation
+rows into canonical records, and applies them through the **same exactly-once
+writer the Cloud Sync hub client uses**: duplicates are dropped by content
+hash and origin identity, revision guards protect your newer local rows, and
+rows a peer itself once merged from a third device flow through with their
+original origin, so every device converges on the same records. New rows are
+embedded into the chroma index incrementally — no full rebuild. A peer
+snapshot whose manifest does not publish the device's sync identity (a
+pre-v2 push) is refused rather than mis-attributed.
+
+**Setup** is nothing beyond the steps above: every device points at the same
+bucket with its own `CLAUDE_MEM_S3_SYNC_DEVICE` name. The first merge runs
+about 5 minutes after the worker starts, then every
+`CLAUDE_MEM_S3_SYNC_MERGE_INTERVAL_MINUTES` (default `60`). Setting it to `0`
+disables merging; an invalid value also disables it — an untrusted interval is
+never read as the default.
+
+**Merges are additive, and deletions do not travel.** A merge never deletes
+anything and never overwrites a newer local revision. A record you deleted
+locally does **not** resurrect when the same snapshot re-merges: the
+exactly-once ledger rejects the identical replay. It reappears only if the
+device that still holds it pushes it again at a higher revision. A deletion on
+one device does not reach the others — there are no tombstones in v2, so a
+merged record stays everywhere it was already merged.
+
+<Warning>
+**S3 merge and Cloud Sync are mutually exclusive.** The merge refuses to run
+while [Cloud Sync](/cloud-sync) is configured — the refusal is logged and
+nothing is written. The reason is one shared apply cursor: both transports
+advance the same `sync_state` cursor, and S3 merges write their own synthetic
+sequence numbers into it. Re-enabling Cloud Sync after merges ran does not
+undo this: hub pulls resume from that position and skip hub changes whose
+sequence numbers fall at or below it — they are not applied. Use one
+transport per device.
+</Warning>
+
+**Where you see it.** The work-viewer's connection popover shows a
+**Memory sync** row while S3 Sync is active: current (with the device count
+and the last merge time), waiting for the first merge, or a merge error — and
+a merge error also raises a Live-chip problem. With Cloud Sync configured the
+popover shows the Cloud copy row, as before. `npx claude-mem s3sync status`
+gains a **Merge** block: the discovered peers, each peer's last outcome
+(records applied, last activity, or the error with its message), and the
+generation watermark — the same stamp `s3sync push` prints, so the two outputs
+correlate.
+
+**Practical notes.**
+
+- The first merge of a large peer history applies everything in **one write
+  transaction**, so a big first sync can briefly pause other writes.
+- Device names are sanitized for the bucket: lowercased, and every run of
+  characters other than letters, digits, dots, dashes and underscores becomes
+  a single `-`. `Laptop` and `LAPTOP` are one bucket root, `lap top` and
+  `lap-top` are another, and `lap.top` is a third. Prefer plainly distinct
+  names (`work-laptop`, `home-desktop`) so nothing collides.
+
 ## Safety and limits
 
 - **Plaintext in the bucket.** Snapshots are uploaded unencrypted. A private
@@ -179,11 +249,13 @@ hostname fallback if machine names can collide or change).
   `.env` out of the bucket entirely, set
   `CLAUDE_MEM_S3_SYNC_INCLUDE_ENV: "false"` (then restore credentials by hand
   on a new machine).
-- **No merge, no conflict resolution.** Restoring a snapshot replaces the
-  local state wholesale. Across machines, the last push wins per device;
-  concurrent edits on different machines are not merged — S3 Sync moves
-  snapshots, it does not reconcile them. For record-level multi-device sync
-  use [Cloud Sync](/cloud-sync).
+- **Additive merge, no conflict resolution.** A pull or restore still replaces
+  local state wholesale. The scheduled merge
+  ([Multi-device merge](#multi-device-merge)) is deliberately additive: it
+  adds what other devices recorded, never deletes, and never overwrites a
+  newer local revision — deletions do not propagate between devices.
+  **S3 merge and [Cloud Sync](/cloud-sync) are mutually exclusive**: the merge
+  refuses to run while Cloud Sync is configured; use one transport per device.
 - **Consistent copies.** db snapshots use SQLite `VACUUM INTO`, so a push
   never captures a half-written database, and every downloaded file is
   SHA-256-verified against the generation's manifest before anything is
