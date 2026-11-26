@@ -66,7 +66,7 @@ export const setupRu: Record<string, string> = {
   'Where your memory lives': 'Где живёт ваша память',
   'Confirm where your memory is kept': 'Подтвердите, где будет храниться память',
   'This computer': 'Этот компьютер',
-  'Your internal model gateway writes the memories': 'Память записывает ваш внутренний модельный шлюз',
+  'Your internal model gateway writes the memories': 'Записывает память ваш внутренний модельный шлюз',
   'Keeping your existing configuration.': 'Сохраняем вашу текущую конфигурацию.',
   'Memory stays on this computer, written by your internal model gateway.': 'Память остаётся на этом компьютере, записывает её ваш внутренний модельный шлюз.',
   'A modern silver desktop computer displaying the CMEM brain mark': 'Современный серебристый настольный компьютер с логотипом-мозгом CMEM',

@@ -62,8 +62,9 @@ export const HISTORY_IMPORT_RUN_STATES = ['idle', 'running', 'stopped', 'done', 
 export type HistoryImportRunState = (typeof HISTORY_IMPORT_RUN_STATES)[number];
 
 /**
- * The rule callers ask: whether the upload is running, so it can still send to cmem.ai. The installer holds a worker
- * restart for it, and the setup page keeps its import screen up for it.
+ * The rule callers ask: whether the upload is running, so it can still send to cmem.ai. The upload's own sender gates
+ * each request on it (history-import.ts), and the worker's background-work report counts a running upload so the
+ * installer holds its worker restart for it.
  */
 export function historyImportRunning(state: HistoryImportRunState): boolean {
   return state === 'running';
@@ -71,8 +72,8 @@ export function historyImportRunning(state: HistoryImportRunState): boolean {
 
 /**
  * Observations in one request of the history upload, the most a request carries: small enough for one cmem.ai
- * serverless request each (the reason history-import.ts has given since the funnel shipped). One definition for the
- * upload and for setup's sample, which reports Stop's batch on its way the way the upload does.
+ * serverless request each (the reason history-import.ts has given since the funnel shipped). One definition for that
+ * upload's paging and its tests; the setup page has no import UI of its own any more.
  */
 export const HISTORY_IMPORT_BATCH = 100;
 /** Owner-approved cap on setup's one hosted upload: the largest measured export was 262 KB, and all exports fit one

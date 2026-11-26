@@ -401,7 +401,7 @@ describe('setup state endpoints', () => {
     expect(response.status).toBe(500);
   });
 
-  it('reports an existing Pro configuration so the funnel keeps it (the skip-choice flow itself is Task 7)', async () => {
+  it('reports an existing configuration so the funnel keeps it (the skip-choice flow)', async () => {
     writeFileSync(settingsPath, JSON.stringify({ env: {
       CLAUDE_MEM_CLOUD_SYNC_TOKEN: 'token', CLAUDE_MEM_CLOUD_SYNC_USER_ID: 'user', CLAUDE_MEM_CLOUD_SYNC_HUB_URL: 'https://hub.example',
     } }));
