@@ -224,6 +224,7 @@ import { SyncRecoveryRoutes } from './worker/http/routes/SyncRecoveryRoutes.js';
 import { ViewerSyncService, ViewerActivity } from './sync/ViewerSyncService.js';
 import { TeamBrainRoutes } from './worker/http/routes/TeamBrainRoutes.js';
 import { BackupRoutes } from './worker/http/routes/BackupRoutes.js';
+import { S3SyncRoutes } from './worker/http/routes/S3SyncRoutes.js';
 import { applyPendingRestore } from './backup/restore-swap.js';
 import { applyPendingChromaRestore } from './s3sync/chroma-restore.js';
 
@@ -1397,6 +1398,12 @@ export class WorkerService implements WorkerRef {
       this.server.registerRoutes(new BackupRoutes(this.dbManager));
       logger.info('WORKER', 'BackupRoutes registered');
 
+      // S3 Sync endpoints (S3 sync plan Task 8). Same unconditional
+      // registration: status answers {configured: false} when S3 Sync is
+      // disabled, and push/pull answer 400 with guidance.
+      this.server.registerRoutes(new S3SyncRoutes(this.dbManager));
+      logger.info('WORKER', 'S3SyncRoutes registered');
+
       // Install the terminal 404 and error handlers after the last route.
       // Without them the worker keeps Express's default handler, which answers a
       // forwarded error (such as a malformed JSON body) with an HTML page that
@@ -1514,6 +1521,11 @@ export class WorkerService implements WorkerRef {
       // null when disabled — DatabaseManager gates construction). First run
       // lands ~5 minutes after start, then every backup interval.
       this.dbManager.getBackupManager()?.start();
+      // S3 Sync scheduler (opt-in via CLAUDE_MEM_S3_SYNC_ENABLED; null when
+      // disabled — DatabaseManager gates construction). First run lands
+      // ~5 minutes after start, then per-set intervals (db 6h, chroma 24h
+      // by default).
+      this.dbManager.getS3SyncManager()?.start();
       this.startLogRetention();
       this.startPluginCachePrune();
 

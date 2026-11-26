@@ -6,6 +6,7 @@ import { openGuardedSqliteDatabase } from '../sqlite/connection.js';
 import { ChromaSync } from '../sync/ChromaSync.js';
 import { CloudSync, isCloudSyncConfigured } from '../sync/CloudSync.js';
 import { BackupManager } from '../backup/BackupManager.js';
+import { S3SyncManager } from '../s3sync/S3SyncManager.js';
 import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js';
 import { USER_SETTINGS_PATH, DB_PATH, DATA_DIR, ensurePrivateDir } from '../../shared/paths.js';
 import { MediaStore } from '../media/store.js';
@@ -31,6 +32,7 @@ export class DatabaseManager {
   private syncRecoveryReader: SyncRecoveryReader | null = null;
   private syncConflictRecovery: SyncConflictRecovery | null = null;
   private backupManager: BackupManager | null = null;
+  private s3SyncManager: S3SyncManager | null = null;
   private mediaStore: MediaStore | null = null;
   private mediaCleanupTimer: ReturnType<typeof setInterval> | null = null;
   private mediaCloudSync: MediaCloudSync | null = null;
@@ -140,6 +142,13 @@ export class DatabaseManager {
       this.backupManager = new BackupManager(settings);
     }
 
+    // S3 Sync is opt-in too. Disabled installs get null so the lifecycle
+    // `getS3SyncManager()?.start()` call is a free no-op and the routes
+    // answer {configured: false}.
+    if (settings.CLAUDE_MEM_S3_SYNC_ENABLED === 'true') {
+      this.s3SyncManager = new S3SyncManager(settings);
+    }
+
     logger.info('DB', 'Database initialized (shared connection)');
   }
 
@@ -164,6 +173,9 @@ export class DatabaseManager {
 
     await this.backupManager?.stop();
     this.backupManager = null;
+
+    await this.s3SyncManager?.stop();
+    this.s3SyncManager = null;
 
     // The store prepares hot-path statements on this shared connection. Bun
     // keeps the connection and the database file alive until they are
@@ -217,6 +229,10 @@ export class DatabaseManager {
 
   getBackupManager(): BackupManager | null {
     return this.backupManager;
+  }
+
+  getS3SyncManager(): S3SyncManager | null {
+    return this.s3SyncManager;
   }
 
   getConnection(): Database {
