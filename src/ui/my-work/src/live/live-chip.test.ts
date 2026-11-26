@@ -104,7 +104,7 @@ describe('the Live chip', () => {
       liveChipProblem(connection({}), REFUSED),
       liveChipProblem(connection({ sync: sync('stale'), syncReceivedAt: NOW }), null),
       liveChipProblem(connection({ sync: { ...sync('current'),
-        s3: { state: 'error', lastMergeAt: NOW, mergedPeers: null, lastError: 'boom' } }, syncReceivedAt: NOW }), null),
+        s3: { state: 'error', lastMergeAt: NOW, mergedPeers: null, lastError: 'boom', lastGenerationMerged: null } }, syncReceivedAt: NOW }), null),
     ])
     assert.deepEqual([...named].sort(), [...LIVE_CHIP_PROBLEMS].sort())
   })
