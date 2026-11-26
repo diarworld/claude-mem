@@ -1355,7 +1355,7 @@ var init_SettingsDefaultsManager = __esm({
         CLAUDE_MEM_ONLINE_SIGNUP_NOTE: "",
         CLAUDE_MEM_ONLINE_SIGNUP_AT: "",
         CLAUDE_MEM_ONLINE_SIGNUP_SENT: "",
-        // 'true' once the waitlist accepted it, 'false' to retry next install
+        // 'true' once the signup endpoint accepted it, 'false' to retry next install
         CLAUDE_MEM_PRO_PLAN: "",
         // 'trial' | 'pro' | 'none' — plan reported by the poll on ready
         CLAUDE_MEM_PRO_FALLBACK_AT: "",
