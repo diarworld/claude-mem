@@ -90,9 +90,19 @@ export interface S3SyncPresentation {
  * shared union does not name (a new state must be worded in
  * S3_SYNC_STATE_WORDS first, so this is unreachable for known states), leaves
  * the field null and the popover renders today's Cloud copy row.
+ *
+ * Design priority (docs/plans/2026-11-26-s3-sync-v2-merge-design.md): the row
+ * shows whichever transport is REAL. When Cloud Sync is configured, the S3
+ * merge refuses before discovery — mergedPeers stays null and 'stale' is a
+ * permanent refusal, not a wait. That both-configured misconfiguration is a
+ * docs matter, and the truthful row is the Cloud copy that IS syncing, so the
+ * refusal shape yields the row back to cloud. A stale with discovered peers
+ * (or an error) is the S3 dimension's own truth and stays.
  */
-function presentS3Sync(s3: ViewerS3SyncStatus | null | undefined): S3SyncPresentation | null {
+function presentS3Sync(sync: (SyncStatusForDisplay & { s3?: ViewerS3SyncStatus | null }) | null | undefined): S3SyncPresentation | null {
+  const s3 = sync?.s3;
   if (!s3 || typeof s3.state !== 'string' || !(s3.state in S3_SYNC_STATE_WORDS)) return null
+  if (sync?.configured && s3.state === 'stale' && s3.mergedPeers === null) return null
   const words = S3_SYNC_STATE_WORDS[s3.state]
   return {
     state: s3.state,
@@ -193,5 +203,5 @@ export function getConnectionStatus({
   return { state, label, detail, tone, isLive: state === 'live', eventAgeMs, sourceAgeMs,
     lastSuccessfulCheckAt: successfulCheckAt, activityCheckedAt: checkTime(activityCheckedAt), clockSkew, staleAfterMs: threshold, tooltip,
     sync: presentSync(sync, syncReceivedAt, now),
-    s3: presentS3Sync(sync?.s3) }
+    s3: presentS3Sync(sync) }
 }

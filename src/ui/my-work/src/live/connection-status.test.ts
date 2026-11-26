@@ -184,6 +184,26 @@ describe('the S3 memory sync row (s3 dimension of the sync payload)', () => {
     assert.equal(status.s3?.state, 'current')
   })
 
+  it('yields the row back to cloud when Cloud Sync is configured and s3 shows the refusal shape', () => {
+    // Both configured: the merge refuses before discovery (mergedPeers null,
+    // mergeState empty, forever) — 'stale' is a permanent refusal, not a
+    // wait, and the truthful row is the Cloud copy that IS syncing.
+    const status = getConnectionStatus({ ...live, syncReceivedAt: 99_000,
+      sync: { ...cloudSync('current'), s3: s3({ state: 'stale', lastMergeAt: 90_000, mergedPeers: null }) } })
+    assert.equal(status.sync?.label, 'Cloud data current')
+    assert.equal(status.s3, null)
+  })
+
+  it('keeps the s3 row under a configured cloud when s3 has its own evidence (error)', () => {
+    // The refusal suppression is shape-specific: an s3 ERROR is the S3
+    // dimension's own truth even beside a configured cloud.
+    const status = getConnectionStatus({ ...live, syncReceivedAt: 99_000,
+      sync: { ...cloudSync('current'), s3: s3({ state: 'error', lastMergeAt: 95_000,
+        lastError: 'downloaded file does not match the manifest: claude-mem.db.gz' }) } })
+    assert.equal(status.s3?.state, 'error')
+    assert.equal(status.s3?.lastError, 'downloaded file does not match the manifest: claude-mem.db.gz')
+  })
+
   it('without an s3 dimension the presentation is null and the cloud row is byte-identical to today', () => {
     const status = getConnectionStatus({ ...live, syncReceivedAt: 99_000, sync: cloudSync('current') })
     assert.equal(status.s3, null)
