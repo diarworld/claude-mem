@@ -202,10 +202,17 @@ export async function runBrowserSetup(deps: BrowserSetupDeps): Promise<BrowserSe
 }
 
 /**
- * Settings a running worker reads from settings.json each time it uses them (provider-dispatch, the Claude provider),
- * so At Home's choice (provider, Claude auth method, model) takes effect with no restart.
+ * Settings a running worker reads from settings.json each time it uses them (provider-dispatch, the Claude provider,
+ * the gateway provider's dispatch tuple), so At Home's choice (provider, Claude auth method, model, the GPUStack
+ * defaults and key) takes effect with no restart.
  */
-const SETTINGS_THE_WORKER_READS_LIVE = new Set(['CLAUDE_MEM_PROVIDER', 'CLAUDE_MEM_CLAUDE_AUTH_METHOD', 'CLAUDE_MEM_MODEL']);
+const SETTINGS_THE_WORKER_READS_LIVE = new Set([
+  'CLAUDE_MEM_PROVIDER', 'CLAUDE_MEM_CLAUDE_AUTH_METHOD', 'CLAUDE_MEM_MODEL',
+  // resolveOpenRouterConfig re-reads settings.json on every dispatch, so the
+  // funnel's gateway defaults and key take effect exactly like the Claude
+  // provider's keys above.
+  'CLAUDE_MEM_OPENROUTER_BASE_URL', 'CLAUDE_MEM_OPENROUTER_MODEL', 'CLAUDE_MEM_OPENROUTER_API_KEY',
+]);
 const CLOUD_SYNC_SETTING_PREFIX = 'CLAUDE_MEM_CLOUD_SYNC_';
 
 function effectiveSettings(snapshot: string): Record<string, string> {

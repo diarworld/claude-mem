@@ -185,6 +185,31 @@ describe('GPUStack fresh-install defaults', () => {
     expect(result.remediation).toBe('Set CLAUDE_MEM_OPENROUTER_API_KEY (env or ~/.claude-mem/.env) or pass --provider claude.');
   });
 
+  it('a non-TTY run with no provider at all (the browser funnel shape) aborts with the same env-var remediation', () => {
+    // No --provider and no validation step: the shape of a resumed deferred
+    // setup whose funnel fresh choice reaches promptProvider with nobody at
+    // the terminal to answer the key prompt.
+    const result = runCase({ settings: {} });
+    expect(result.error).toBe('Set CLAUDE_MEM_OPENROUTER_API_KEY (env or ~/.claude-mem/.env) or pass --provider claude.');
+    expect(result.passwordCalls).toEqual([]);
+    expect(result.settings).toEqual({});
+  });
+
+  it('a non-TTY funnel-shaped run with the key in the environment resolves the gateway without a prompt', () => {
+    const result = runCase({ settings: {}, env: { CLAUDE_MEM_OPENROUTER_API_KEY: 'sk-or-v1-exported' } });
+    expect(result.error).toBeUndefined();
+    expect(result.provider).toBe('openrouter');
+    expect(result.providerSource).toBe('default');
+    expect(result.passwordCalls).toEqual([]);
+    expect(result.settings).toMatchObject({
+      CLAUDE_MEM_PROVIDER: 'openrouter',
+      CLAUDE_MEM_OPENROUTER_BASE_URL: GPUSTACK_URL,
+      CLAUDE_MEM_OPENROUTER_MODEL: GPUSTACK_MODEL,
+    });
+    // The exported key is never copied to disk.
+    expect(result.settings!.CLAUDE_MEM_OPENROUTER_API_KEY).toBeUndefined();
+  });
+
   it('leaves a persisted provider and its settings untouched', () => {
     const settings = {
       CLAUDE_MEM_PROVIDER: 'claude',

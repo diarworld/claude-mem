@@ -312,7 +312,8 @@ describe('install in GUI mode (interactive TTY, no --provider)', () => {
     await waitForStage('home-ready');
     await browserPost('/api/setup/complete', {});
     await installing;
-    expect(questions).toEqual([]);
+    // The only terminal question is the gateway key prompt that came with the choice (design 4a).
+    expect(questions).toEqual(['Paste your GPUStack API key:']);
   });
 
   it('offers the default model when the saved one is not allowed outside the gateway, and At Home still finishes', async () => {
@@ -378,22 +379,42 @@ describe('install in GUI mode (interactive TTY, no --provider)', () => {
     expect((await browserPost('/api/setup/complete', {})).status).toBe(200);
     await install;
 
-    // useSubscriptionAuth(): local, logged-in Claude SDK account; no claude-mem login at all.
-    expect(readSettings()).toMatchObject({ CLAUDE_MEM_PROVIDER: 'claude', CLAUDE_MEM_CLAUDE_AUTH_METHOD: 'subscription', CLAUDE_MEM_CLOUD_SYNC_TOKEN: '' });
+    // Design 4a: a fresh At Home choice lands in the same state as a fresh
+    // terminal install — the internal gateway's defaults plus the key the
+    // terminal prompt asked for while the browser waited.
+    expect(readSettings()).toMatchObject({
+      CLAUDE_MEM_PROVIDER: 'openrouter',
+      CLAUDE_MEM_OPENROUTER_BASE_URL: 'https://gpustack.data.lmru.tech/v1',
+      CLAUDE_MEM_OPENROUTER_MODEL: 'glm-5.3-flash',
+      CLAUDE_MEM_OPENROUTER_API_KEY: 'new-provider-key',
+    });
     expect(pairingStarts).toEqual([]);
-    // No terminal questions at all: no email opt-in, no provider menu.
+    // The browser opened before any terminal question; the gateway key prompt came with the choice.
     expect(questionsAtOpen).toEqual([[]]);
-    expect(questions).toEqual([]);
+    expect(questions).toEqual(['Paste your GPUStack API key:']);
     expect(signupRequests).toEqual([]);
     expect(JSON.parse(readFileSync(statePath, 'utf8'))).toMatchObject({ status: 'complete', choice: { branch: 'home' }, installer: { stage: 'home-ready' } });
-    // A fresh At Home run applied the local provider itself: the honest account line (home-kept-existing, a machine
-    // whose existing configuration the installer kept, is the one that says "Kept existing configuration").
-    expect(lines.join('\n')).toContain('Account:     Not required (local install)');
+    // The honest account line (home-kept-existing, a machine whose existing configuration the
+    // installer kept, is the one that says "Kept existing configuration").
+    expect(lines.join('\n')).toContain('Account:     Internal model gateway (GPUStack)');
     expect(lines.join('\n')).not.toContain('cmem.ai');
     expect(lines.join('\n')).toContain('claude-mem installed successfully!');
     expect(existsSync(sessionPath)).toBe(false);
     expect(ranTasks).toContain('Claude Code: registering plugin');
     expect(unexpected).toEqual([]);
+  });
+
+  it('an explicit --provider claude keeps winning over the funnel: At Home ends on the Anthropic plan', async () => {
+    const install = runInstallCommand({ provider: 'claude', providerSource: 'flag', setup: 'browser' });
+    await waitForStage('waiting-for-choice');
+    await browserPost('/api/setup/choice', { branch: 'home', memoryBilling: 'existing' });
+    await waitForStage('home-ready');
+    await browserPost('/api/setup/complete', {});
+    await install;
+    // The flag beats the shipped gateway default: the funnel applied nothing, and no key was asked for.
+    expect(readSettings()).toMatchObject({ CLAUDE_MEM_PROVIDER: 'claude', CLAUDE_MEM_CLAUDE_AUTH_METHOD: 'subscription' });
+    expect(questions).toEqual([]);
+    expect(lines.join('\n')).toContain('Account:     Not required (local install)');
   });
 
   it('clears an interrupted GUI hand-off before the worker starts', async () => {
@@ -438,13 +459,11 @@ describe('install in GUI mode (interactive TTY, no --provider)', () => {
     expect(pairingStarts).toEqual([]);
     expect(opened).toEqual([`${workerBase}/?setup=1`]);
     expect(unexpected).toEqual([]);
-    // useSubscriptionAuth() ran during the choice, exactly as the home funnel always resolved it.
-    expect(readSettings()).toMatchObject({ CLAUDE_MEM_PROVIDER: 'claude', CLAUDE_MEM_CLAUDE_AUTH_METHOD: 'subscription' });
     expect((await browserPost('/api/setup/complete', {})).status).toBe(200);
     await install;
     expect(JSON.parse(readFileSync(intentCredentialsPath, 'utf8'))).toEqual(intentCredentials);
-    // A fresh At Home run resolves the local provider in the page, so the account line names the local install.
-    expect(lines.join('\n')).toContain('Account:     Not required (local install)');
+    // A fresh At Home run resolves the internal gateway in the funnel, so the account line names it.
+    expect(lines.join('\n')).toContain('Account:     Internal model gateway (GPUStack)');
     expect(lines.join('\n')).not.toContain('cmem.ai');
     expect(unexpected).toEqual([]);
   });
@@ -458,8 +477,14 @@ describe('install in GUI mode (interactive TTY, no --provider)', () => {
     expect((await browserState()).backgroundWorkRunning).toEqual(['extraction']);
     expect((await browserPost('/api/setup/complete', {})).status).toBe(200);
     await install;
-    // The provider and auth method changed, but the worker reads them live: the one start is the funnel's own.
-    expect(readSettings()).toMatchObject({ CLAUDE_MEM_PROVIDER: 'claude', CLAUDE_MEM_CLAUDE_AUTH_METHOD: 'subscription' });
+    // The gateway dispatch tuple changed, but the worker reads the dispatch settings live:
+    // the one start is the funnel's own.
+    expect(readSettings()).toMatchObject({
+      CLAUDE_MEM_PROVIDER: 'openrouter',
+      CLAUDE_MEM_OPENROUTER_BASE_URL: 'https://gpustack.data.lmru.tech/v1',
+      CLAUDE_MEM_OPENROUTER_MODEL: 'glm-5.3-flash',
+      CLAUDE_MEM_OPENROUTER_API_KEY: 'new-provider-key',
+    });
     expect(workerStarts).toBe(1);
     expect(extraction.restartsWhileRunning).toBe(0);
     expect(extraction.running).toBe(true);

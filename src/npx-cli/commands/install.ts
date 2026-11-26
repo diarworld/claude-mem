@@ -1296,11 +1296,12 @@ export async function promptProvider(options: InstallOptions): Promise<ProviderI
   if (options.provider) {
     selectedProvider = options.provider;
   } else {
-    if (!isInteractive) {
-      throw new Error('Non-interactive provider validation did not run.');
-    }
     // No prompt: the only choice is the internal model gateway. A fresh
     // install fills the empty provider keys with the GPUStack defaults below.
+    // A non-TTY run gets here only through the browser funnel (the terminal
+    // validation always resolves a provider first); the gateway branch below
+    // then resolves the key from the environment, ~/.claude-mem/.env or
+    // settings, and aborts with the env-var remediation when it is missing.
     options.providerSource = 'default';
     options.provider = 'openrouter';
     selectedProvider = 'openrouter';
@@ -1365,10 +1366,12 @@ export async function promptProvider(options: InstallOptions): Promise<ProviderI
       return 'openrouter';
     }
     // No key held in settings, the environment or ~/.claude-mem/.env. A
-    // non-TTY run was already aborted by validateNonInteractiveProvider with
-    // the remediation before this step could run.
+    // non-TTY run cannot answer the prompt: the terminal flow was already
+    // aborted by validateNonInteractiveProvider with these words, and a
+    // non-TTY browser funnel (a resumed deferred setup) aborts here with the
+    // same remediation instead of an internal-invariant error.
     if (!isInteractive) {
-      throw new Error('Non-interactive provider validation did not run.');
+      throw new Error('Set CLAUDE_MEM_OPENROUTER_API_KEY (env or ~/.claude-mem/.env) or pass --provider claude.');
     }
     const apiKeyResult = await p.password({
       message: 'Paste your GPUStack API key:',
@@ -1631,8 +1634,9 @@ export interface InstallOptions {
   provider?: 'claude' | 'codex' | 'gemini' | 'openrouter' | 'openai-compatible' | 'host';
   /**
    * How `provider` was decided. `flag` for an explicit `--provider` (and the
-   * grok-bot implicit cmem default set in index.ts), `default` when a fresh
-   * non-interactive run fell back to claude, `persisted` when an update or non-interactive
+   * grok-bot implicit cmem default set in index.ts), `default` when the run
+   * fell back to the shipped choice with no `--provider` (the internal model
+   * gateway on a TTY, claude when non-interactive), `persisted` when an update or non-interactive
    * run reused the provider already in settings, `prompt` for the interactive
    * multiselect, `browser` for the install funnel's At Home choice. Reported on
    * install_completed as `provider_source`.
@@ -2564,16 +2568,24 @@ async function runInstallCommandInner(options: InstallOptions, summary: InstallS
           applyChoice: async (choice, chosen) => {
             // A machine with an existing configuration keeps it untouched (design 4a): no provider
             // question is re-answered and nothing is written over it, and the funnel names that
-            // outcome `home-kept-existing` (the setup page and the summary read the stage). A fresh
-            // machine resolves to the local provider (logged-in Claude SDK account, no claude-mem
-            // login); the checkout branch and its pairing hand-off are gone.
+            // outcome `home-kept-existing` (the setup page and the summary read the stage).
             if (chosen.alreadyPro) {
               options.providerSource = 'persisted';
               return 'home-kept-existing';
             }
-            options.provider = 'claude';
-            options.providerSource = 'browser';
+            // A fresh machine lands in the same state as a fresh terminal install (design 4a):
+            // the internal model gateway with its GPUStack defaults, the key read from the
+            // environment, ~/.claude-mem/.env or settings, or asked for in this terminal while
+            // the browser waits. promptProvider applies the shipped defaults itself, so nothing
+            // is duplicated here; an explicit --provider flag keeps winning over the funnel.
+            const funnelChoosesProvider = options.providerSource !== 'flag';
+            if (funnelChoosesProvider) {
+              options.provider = undefined;
+              options.providerSource = 'browser';
+            }
             browserProvider = await promptProvider(options);
+            // promptProvider words a no-flag resolution 'default'; the funnel keeps its own source.
+            if (funnelChoosesProvider) options.providerSource = 'browser';
             await promptClaudeModel(options, false);
             return 'home-ready';
           },
@@ -2687,9 +2699,15 @@ async function runInstallCommandInner(options: InstallOptions, summary: InstallS
   // The provider this run ended up with: the default openrouter path sets it,
   // and a named provider wins, because host reports its transport (openrouter).
   const summaryProvider = options.provider ?? selectedProvider;
+  // A no-flag run (terminal or browser funnel) ends on the shipped gateway
+  // defaults, so the summary names it; an explicit --provider openrouter may
+  // point at any OpenRouter-compatible endpoint, so it keeps the neutral line.
   const accountStatus = options.providerSource === 'persisted'
     ? 'Kept existing configuration'
-    : summaryProvider === 'host' ? 'Not required (host observer)' : 'Not required (local install)';
+    : summaryProvider === 'host' ? 'Not required (host observer)'
+    : summaryProvider === 'openrouter' && (options.providerSource === 'default' || options.providerSource === 'browser')
+      ? 'Internal model gateway (GPUStack)'
+      : 'Not required (local install)';
   const summaryLines = [
     `Version:     ${styleText('cyan', version)}`,
     `Plugin dir:  ${styleText('cyan', marketplaceDir)}`,
