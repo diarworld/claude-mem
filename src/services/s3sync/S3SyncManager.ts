@@ -11,6 +11,7 @@ import { copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, renameS
 import { randomUUID } from 'crypto';
 import path from 'node:path';
 import os from 'node:os';
+import type { Database } from 'bun:sqlite';
 import { paths, USER_SETTINGS_PATH } from '../../shared/paths.js';
 import { parseJsonWithBom, writeJsonFileAtomic } from '../../shared/atomic-json.js';
 import { loadClaudeMemEnv } from '../../shared/EnvManager.js';
@@ -23,6 +24,10 @@ import { S3_SYNC_SETS, S3_SYNC_ROOT, isValidGenerationStamp, peersFromKeys, type
 import { buildChromaSnapshotSet, buildDbSnapshotSet, gunzipFile, type SnapshotEntry, type SnapshotInput } from './snapshot.js';
 import { stagePendingChromaRestore, stagePendingRestore } from '../backup/snapshot-files.js';
 import { ChromaSyncState } from '../sync/ChromaSyncState.js';
+import { SyncApply, type ChromaSyncLike } from '../sync/SyncApply.js';
+import { incrementCanonicalDecimal } from '../sync/CanonicalContent.js';
+import { isCloudSyncConfigured } from '../sync/CloudSync.js';
+import { transformSnapshotToOps } from './merge.js';
 import type { S3SyncPushPhase } from './push-phase.js';
 
 export interface S3SyncSettingKeys {
@@ -36,6 +41,13 @@ export interface S3SyncSettingKeys {
   CLAUDE_MEM_S3_SYNC_INCLUDE_ENV?: string;
   CLAUDE_MEM_S3_SYNC_INCLUDE_CHROMA?: string;
   CLAUDE_MEM_S3_SYNC_DEVICE?: string;
+  /** S3 Sync v2: minutes between merge ticks; 0 (or untrusted) = disabled. */
+  CLAUDE_MEM_S3_SYNC_MERGE_INTERVAL_MINUTES?: string;
+  // Cloud Sync exclusivity gate (isCloudSyncConfigured): SettingsDefaults
+  // always carries these (default ''), so the worker's full struct has them.
+  CLAUDE_MEM_CLOUD_SYNC_TOKEN: string;
+  CLAUDE_MEM_CLOUD_SYNC_USER_ID: string;
+  CLAUDE_MEM_CLOUD_SYNC_HUB_URL: string;
 }
 
 export interface S3SyncManagerOptions {
@@ -57,6 +69,20 @@ export interface S3SyncManagerOptions {
   jitterFraction?: number;
   /** Test seam: credential env override (defaults to loadClaudeMemEnv()). */
   env?: { S3_SYNC_ACCESS_KEY_ID?: string; S3_SYNC_SECRET_ACCESS_KEY?: string };
+  /**
+   * S3 Sync v2: a writable handle to the live database for SyncApply (the
+   * worker passes dbManager.getConnection() — the SAME shared connection, so
+   * merges see and join the worker's transactions). Omitted → the merge tick
+   * refuses to run: the manager never opens a second writable connection to
+   * the live db on its own.
+   */
+  db?: Database;
+  /**
+   * S3 Sync v2: the Chroma forwarder, wired the way CloudSync wires SyncApply
+   * (worker: dbManager.getChromaSync()). Omitted → merged rows skip chroma
+   * (the boot backfill reconciles later — SyncApply's contract).
+   */
+  chromaSync?: ChromaSyncLike | null;
 }
 
 export interface S3SyncPushOutcome {
@@ -98,6 +124,23 @@ export interface S3SyncPullSetResult {
   pairedDbGeneration?: string;
   /** Why the set was skipped. */
   reason?: string;
+}
+
+/** Per-peer outcome of one merge tick (S3 Sync v2). */
+export interface S3SyncMergePeerOutcome {
+  peer: string;
+  outcome: 'merged' | 'skipped' | 'error';
+  /** Rows SyncApply applied (merged outcomes only). */
+  applied?: number;
+  /** The failure reason (error outcomes only). */
+  error?: string;
+}
+
+export interface S3SyncMergeOutcome {
+  /** Set when the tick refused to run at all (Cloud Sync configured, no db handle, stopped). */
+  refused?: string;
+  /** Per-peer outcomes in discovery order; empty when refused. */
+  peers: S3SyncMergePeerOutcome[];
 }
 
 export interface S3SyncPullResult {
@@ -199,6 +242,16 @@ export class S3SyncManager {
   /** Peers from the most recent discovery; null = never discovered (status reports unknown, not empty). */
   private lastMergePeers: string[] | null = null;
 
+  // S3 Sync v2 merge machinery: the injected live-db handle + Chroma
+  // forwarder for SyncApply, and the tick's own single-flight state
+  // (independent of the per-set push maps — the merge never blocks a push).
+  private readonly mergeDb: Database | null;
+  private readonly chromaSync: ChromaSyncLike | null;
+  private mergeTimer: ReturnType<typeof setTimeout> | null = null;
+  private mergeNextRunAt: number | null = null;
+  private mergePromise: Promise<S3SyncMergeOutcome> | null = null;
+  private mergeController: AbortController | null = null;
+
   constructor(settings: S3SyncSettingKeys, options: S3SyncManagerOptions = {}) {
     this.settings = settings;
     this.now = options.now ?? Date.now;
@@ -220,6 +273,8 @@ export class S3SyncManager {
     this.stateDir = options.stateDir ?? path.join(this.dataDir, 'state');
     this.s3syncDir = path.join(this.dataDir, 'state', 's3sync');
     this.device = settings.CLAUDE_MEM_S3_SYNC_DEVICE?.trim() || os.hostname();
+    this.mergeDb = options.db ?? null;
+    this.chromaSync = options.chromaSync ?? null;
     const fileEnv = loadClaudeMemEnv();
     this.transport = options.transport ?? new BunS3Transport({
       endpoint: settings.CLAUDE_MEM_S3_SYNC_ENDPOINT || 'https://storage.yandexcloud.net',
@@ -362,6 +417,276 @@ export class S3SyncManager {
     this.setMergeState(peerRoot, { state: 'skipped', applied: 0, lastMergeAt: this.now(), lastError: null });
   }
 
+  // --- merge tick (S3 Sync v2) --------------------------------------------
+
+  /**
+   * The merge cadence in ms, or null when disabled. The setting default is 60
+   * minutes; an explicit '0' means disabled. The coercion is deliberately
+   * honest, mirroring v1's interval clamp: there, invalid values fall back to
+   * the default because a push cadence must always exist; here 0 is a
+   * meaningful "off", so anything that cannot be trusted as a positive number
+   * (NaN, garbage, ≤ 0) is treated as OFF, never as the default — an
+   * untrusted interval must not become a back-to-back merge loop.
+   */
+  private mergeIntervalMs(): number | null {
+    const raw = this.settings.CLAUDE_MEM_S3_SYNC_MERGE_INTERVAL_MINUTES;
+    if (raw === undefined || raw === '') return 60 * 60_000;
+    const parsed = Number(raw);
+    if (!Number.isFinite(parsed) || parsed <= 0) return null;
+    return Math.max(1, parsed * 60_000);
+  }
+
+  private scheduleMerge(delayMs: number): void {
+    if (this.stopped) return;
+    if (this.mergeTimer) clearTimeout(this.mergeTimer);
+    const dueAt = this.now() + delayMs;
+    this.mergeNextRunAt = dueAt;
+    this.armMergeTimer(dueAt);
+  }
+
+  private armMergeTimer(dueAt: number): void {
+    const delayMs = Math.max(0, dueAt - this.now());
+    const wait = Math.min(delayMs, MAX_TIMER_DELAY_MS);
+    const timer = setTimeout(() => {
+      this.mergeTimer = null;
+      if (delayMs > wait) {
+        this.armMergeTimer(dueAt); // timers cap at ~24.8 days; re-arm without merging
+        return;
+      }
+      void this.mergeTick();
+    }, wait);
+    (timer as { unref?: () => void }).unref?.(); // never hold the process open
+    this.mergeTimer = timer;
+  }
+
+  /** Scheduled merge tick: same guarded, non-throwing shape as the push ticks. */
+  private async mergeTick(): Promise<void> {
+    if (this.stopped) return;
+    try {
+      await this.mergeNow();
+    } catch (error) {
+      // mergeNow resolves refused outcomes instead of throwing; this guards
+      // the loop against anything unexpected regardless.
+      logger.warn('S3SYNC', 'Scheduled merge failed; retrying next interval', {},
+        error instanceof Error ? error : new Error(String(error)));
+    }
+    if (this.stopped) return;
+    const interval = this.mergeIntervalMs();
+    if (interval !== null) this.scheduleMerge(interval);
+  }
+
+  /**
+   * On-demand merge of every discovered peer into the local database, through
+   * SyncApply. Single-flight, mirroring pushSet: a concurrent call resolves
+   * `null` while one is running, and the in-flight promise is registered
+   * synchronously — before the pipeline's first await — so a concurrent
+   * stop() always sees and settles it. Never throws: refusals come back as
+   * `{ refused }`, per-peer failures as `outcome: 'error'` entries (the tick
+   * must never block or fail the push pipeline).
+   */
+  async mergeNow(): Promise<S3SyncMergeOutcome | null> {
+    if (this.mergePromise) return null;
+    if (this.stopped) return { refused: 'S3 sync manager stopped', peers: [] };
+    const run = this.executeMergeTick();
+    this.mergePromise = run;
+    try {
+      return await run;
+    } finally {
+      if (this.mergePromise === run) this.mergePromise = null;
+    }
+  }
+
+  /** The refusal reason for running a merge at all, or null when it may run. */
+  private mergeRefusal(): string | null {
+    // CLOUD SYNC EXCLUSIVITY (design: "Cursor policy"): applyOps advances the
+    // same sync_state cursor the hub client uses, so the two transports are
+    // mutually exclusive. Refuse FIRST — before discovery, before downloads,
+    // recording nothing — with the real production predicate.
+    if (isCloudSyncConfigured(this.settings)) {
+      return 'S3 merge refused: Cloud Sync is configured. The two transports share the sync_state cursor and are mutually exclusive; unconfigure Cloud Sync to use S3 merge.';
+    }
+    if (this.mergeDb === null) {
+      return 'S3 merge refused: no live database handle was injected (worker wiring missing; the manager never opens a second writable connection to the live db).';
+    }
+    return null;
+  }
+
+  private async executeMergeTick(): Promise<S3SyncMergeOutcome> {
+    const refusal = this.mergeRefusal();
+    if (refusal !== null) {
+      // Log once per tick (not per peer) — a refusal is a configuration
+      // state, not a peer event.
+      logger.warn('S3SYNC', refusal, {});
+      return { refused: refusal, peers: [] };
+    }
+    const db = this.mergeDb!;
+    const controller = new AbortController();
+    this.mergeController = controller;
+    const peers = await this.discoverMergePeers();
+    const syncIdentity = this.loadState().syncIdentity;
+    const results: S3SyncMergePeerOutcome[] = [];
+    try {
+      // Sequential, not parallel: one peer's failure must never disturb
+      // another's merge, and the shared live db wants one writer at a time.
+      for (const peerRoot of peers) {
+        if (this.stopped || controller.signal.aborted) break;
+        try {
+          const outcome = await this.mergePeer(db, syncIdentity, peerRoot, controller.signal);
+          results.push({ ...outcome, peer: peerRoot }); // the loop's root is authoritative
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          this.recordPeerError(peerRoot, message);
+          logger.warn('S3SYNC', `merge from peer ${peerRoot} failed; other peers continue`, { peer: peerRoot },
+            error instanceof Error ? error : new Error(message));
+          results.push({ peer: peerRoot, outcome: 'error', error: message });
+        }
+      }
+    } finally {
+      this.mergeController = null;
+    }
+    return { peers: results };
+  }
+
+  /**
+   * Merge one peer: LATEST → watermark skip → verified download (the pull
+   * pipeline's discipline, staged OUTSIDE the restore path) → read-only
+   * transform → seq re-seat from the apply cursor → applyOps → watermark.
+   * Throws on this peer's failures only; executeMergeTick isolates peers.
+   */
+  private async mergePeer(db: Database, ownSyncIdentity: string, peerRoot: string, signal: AbortSignal): Promise<S3SyncMergePeerOutcome> {
+    // 1. The peer's db-set LATEST marker. (The db set only: chroma is rebuilt
+    // locally and never merged; INCLUDE_CHROMA/INCLUDE_ENV do not gate this.)
+    // The key builders re-sanitize the already-sanitized peer segment —
+    // sanitizeDeviceName is idempotent, so the key is exact.
+    mkdirSync(this.s3syncDir, { recursive: true });
+    const tempLatest = path.join(this.s3syncDir, `merge-latest-${generationStamp(this.now())}.json`);
+    let parsed: ReturnType<typeof parseLatestMarker>;
+    try {
+      await this.transport.download(latestObjectKey(peerRoot, 'db'), tempLatest);
+      parsed = parseLatestMarker(readFileSync(tempLatest, 'utf-8'));
+    } catch {
+      // No LATEST = the peer has never pushed a db snapshot: nothing to
+      // merge, not an error (pull's empty-remote-state semantics).
+      this.recordPeerSkipped(peerRoot);
+      return { peer: peerRoot, outcome: 'skipped' };
+    } finally {
+      rmSync(tempLatest, { force: true });
+    }
+    if (parsed === null || !isValidGenerationStamp(parsed.generation)) {
+      throw new Error(`peer db LATEST marker is unreadable or not a valid generation stamp: ${peerRoot}`);
+    }
+    const generation = parsed.generation;
+
+    // 2. Watermark skip. String comparison is safe: sanitized ISO stamps are
+    // zero-padded and time-ordered (the ordering pull's generation
+    // resolution already relies on). A null watermark (lost/corrupt)
+    // PROCEEDS — re-merging is idempotent by design (peerWatermark's JSDoc).
+    const watermark = this.peerWatermark(peerRoot);
+    if (watermark !== null && generation <= watermark) {
+      this.recordPeerSkipped(peerRoot);
+      return { peer: peerRoot, outcome: 'skipped' };
+    }
+
+    // 3. Verified download into a dedicated merge staging dir — NEVER the
+    // restore path (no pending-restore marker, no sidecars, no backups dir):
+    // a merged snapshot is read once and discarded, not installed.
+    const stagingDir = path.join(this.s3syncDir, 'merge', `${peerRoot}-${generation}`);
+    mkdirSync(stagingDir, { recursive: true });
+    try {
+      const manifestPath = path.join(stagingDir, 'manifest.json');
+      await this.transport.download(manifestObjectKey(peerRoot, 'db', generation), manifestPath);
+      const manifest = parseJsonWithBom<S3SyncManifest>(readFileSync(manifestPath, 'utf-8'));
+
+      // The peer's sync identity travels in its manifest (S3 Sync v2 pushes).
+      // Without it the rows' origin would be unknowable — merging under a
+      // guessed identity would fork attribution forever, so refuse.
+      const peerSyncIdentity = manifest.syncIdentity;
+      if (typeof peerSyncIdentity !== 'string' || peerSyncIdentity.length === 0
+        || Buffer.byteLength(peerSyncIdentity, 'utf-8') > ORIGIN_DEVICE_ID_MAX_BYTES) {
+        throw new Error(`peer manifest does not publish a usable sync identity (pre-v2 push?): ${peerRoot} generation ${generation}`);
+      }
+
+      // Mirror pullSet's verified-download loop exactly: path-escape guard,
+      // per-file download, sha256 + byte count against the manifest. A single
+      // mismatch aborts this peer before anything is transformed.
+      const stagingRoot = path.resolve(stagingDir);
+      for (const file of manifest.files) {
+        signal.throwIfAborted();
+        const resolved = path.resolve(stagingDir, file.key);
+        if (resolved !== stagingRoot && !resolved.startsWith(stagingRoot + path.sep)) {
+          throw new Error(`manifest key escapes the merge staging dir: ${file.key}`);
+        }
+        mkdirSync(path.dirname(resolved), { recursive: true });
+        await this.transport.download(`${generationPrefix(peerRoot, 'db', generation)}/${file.key}`, resolved);
+        if (await sha256File(resolved) !== file.sha256 || statSync(resolved).size !== file.bytes) {
+          throw new Error(`downloaded file does not match the manifest: ${file.key}`);
+        }
+      }
+
+      const dbGz = manifest.files.find(file => file.key === 'claude-mem.db.gz');
+      if (!dbGz) throw new Error(`peer db manifest has no claude-mem.db.gz: ${peerRoot} generation ${generation}`);
+      const snapshotDbPath = path.join(stagingDir, 'claude-mem.db');
+      await gunzipFile(path.join(stagingDir, 'claude-mem.db.gz'), snapshotDbPath, { signal });
+
+      // 4. Read-only transform. A db-level failure (CANTOPEN, corrupt file)
+      // surfaces with the peer context attached — the bare sqlite message
+      // alone would not say WHICH snapshot failed to open.
+      signal.throwIfAborted();
+      let transform: ReturnType<typeof transformSnapshotToOps>;
+      try {
+        transform = transformSnapshotToOps(snapshotDbPath, peerSyncIdentity, { signal });
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        throw new Error(`failed to read peer snapshot for ${peerRoot} (generation ${generation}): ${message}`, { cause: error });
+      }
+
+      // 5. Re-seat the op seqs into a per-run synthetic space: the transform
+      // carries the peer's row-id seqs with gaps (its header documents this),
+      // and applyOps requires ascending seqs. Continue from the CURRENT apply
+      // cursor, one increment per OP (not per row), so the space is gapless
+      // by construction and requireContiguous holds deterministically. This
+      // is safe because S3 merge and Cloud Sync are mutually exclusive —
+      // nothing else writes the cursor between this read and the apply.
+      const syncApply = new SyncApply(db, {
+        deviceId: ownSyncIdentity, // the minted identity — never the device name
+        chromaSync: this.chromaSync,
+        now: this.now,
+      });
+      let seq = syncApply.getCursor();
+      for (const op of transform.ops) {
+        seq = incrementCanonicalDecimal(seq);
+        op.seq = seq;
+      }
+
+      // 6. Apply. Quarantined ops are NOT failure (upstream's per-op
+      // quarantine contract) — counted and logged, the watermark still moves.
+      const applied = syncApply.applyOps(transform.ops, { requireContiguous: true });
+      if (transform.skipped.length > 0 || applied.quarantined > 0) {
+        logger.info('S3SYNC', 'merge set rows aside', {
+          peer: peerRoot,
+          transformSkipped: transform.skipped.length,
+          quarantined: applied.quarantined,
+        });
+      }
+
+      // 7. Full success only now: the watermark moves.
+      this.recordPeerMerged(peerRoot, generation, applied.applied);
+      logger.info('S3SYNC', 'merge from peer complete', {
+        peer: peerRoot, generation, applied: applied.applied,
+        skippedStale: applied.skippedStale, skippedOwn: applied.skippedOwn, quarantined: applied.quarantined,
+      });
+      return { peer: peerRoot, outcome: 'merged', applied: applied.applied };
+    } finally {
+      // Windows: the transformer's readonly sqlite handle finalizes lazily;
+      // retries absorb the EBUSY window (rmSync retries on EBUSY/EPERM).
+      try {
+        rmSync(stagingDir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+      } catch {
+        // A stuck staging dir is swept by start() at the next boot.
+      }
+    }
+  }
+
   private cachedManifest(set: S3SyncSet): S3SyncManifest | null {
     try {
       return parseJsonWithBom<S3SyncManifest>(readFileSync(path.join(this.s3syncDir, `last-push-${set}.json`), 'utf-8'));
@@ -406,6 +731,10 @@ export class S3SyncManager {
     for (const set of S3_SYNC_SETS) {
       this.schedule(set, this.jittered(this.initialDelayMs));
     }
+    // The merge runs on its own interval and timer, independent of the push
+    // sets (a merge must never delay or fail a push). 0/untrusted → no timer.
+    const mergeInterval = this.mergeIntervalMs();
+    if (mergeInterval !== null) this.scheduleMerge(this.jittered(this.initialDelayMs));
   }
 
   /** A hard-killed worker leaves staging-* work dirs behind; sweep ones older than a day. */
@@ -449,6 +778,9 @@ export class S3SyncManager {
     this.sweepNamedDirs(this.s3syncDir, name => name.startsWith('chroma-restore-'), 0, 'orphaned chroma restore staging');
     this.sweepNamedDirs(path.join(this.dataDir, 'backups', 's3sync-incoming'), () => true, 0, 'incoming pull downloads');
     this.sweepNamedDirs(path.dirname(this.chromaDir), name => name.startsWith('chroma-pre-restore-'), 2, 'pre-restore chroma copies');
+    // Merge staging (S3 Sync v2): same boot semantics — nothing is in flight
+    // while the worker boots, so any leftover merge download is orphaned.
+    this.sweepNamedDirs(path.join(this.s3syncDir, 'merge'), () => true, 0, 'merge staging downloads');
   }
 
   /** Remove matching directories under `parentDir`, keeping only the `keep` newest by name (stamp names sort in time order); never throws. */
@@ -476,13 +808,23 @@ export class S3SyncManager {
     this.stopped = true;
     for (const timer of this.timers.values()) clearTimeout(timer);
     this.timers.clear();
+    if (this.mergeTimer) {
+      clearTimeout(this.mergeTimer);
+      this.mergeTimer = null;
+    }
     for (const controller of this.controllers.values()) controller.abort();
     this.controllers.clear();
+    if (this.mergeController) {
+      this.mergeController.abort();
+      this.mergeController = null;
+    }
     // Graceful shutdown lets the aborted pushes run their teardown (state
     // persist, work-dir cleanup) instead of abandoning them mid-flight.
     // Mirrors BackupManager.stop's allSettled. Idempotent: a second call
-    // finds an empty map and resolves immediately.
-    await Promise.allSettled([...this.pushPromises.values()]);
+    // finds an empty map and resolves immediately. The in-flight merge
+    // settles the same way (its per-peer guard absorbs the abort).
+    const mergePromise = this.mergePromise;
+    await Promise.allSettled([...this.pushPromises.values(), ...(mergePromise ? [mergePromise] : [])]);
   }
 
   // --- schedule loop (shape copied from BackupManager.schedule/tick) -----
@@ -637,6 +979,11 @@ export class S3SyncManager {
         device: sanitizeDeviceName(this.device),
         files,
       };
+      // Publish this device's sync identity (S3 Sync v2): peers attribute
+      // merged rows to it via op.origin_device, so attribution is stable
+      // across renames and never the bucket prefix. Peers reading a manifest
+      // without this field (a pre-v2 push) refuse to merge it.
+      manifest.syncIdentity = this.loadState().syncIdentity;
       if (set === 'chroma') {
         const pairedDbGeneration = this.cachedManifest('db')?.generation;
         if (!pairedDbGeneration) {

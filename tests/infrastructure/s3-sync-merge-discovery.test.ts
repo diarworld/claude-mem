@@ -40,6 +40,9 @@ function makeManager(dir: string, settingsOverrides: Record<string, string> = {}
       CLAUDE_MEM_S3_SYNC_INCLUDE_ENV: 'true',
       CLAUDE_MEM_S3_SYNC_INCLUDE_CHROMA: 'true',
       CLAUDE_MEM_S3_SYNC_DEVICE: 'testbox',
+      CLAUDE_MEM_CLOUD_SYNC_TOKEN: '',
+      CLAUDE_MEM_CLOUD_SYNC_USER_ID: '',
+      CLAUDE_MEM_CLOUD_SYNC_HUB_URL: '',
       ...settingsOverrides,
     },
     {

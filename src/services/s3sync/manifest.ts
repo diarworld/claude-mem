@@ -27,6 +27,14 @@ export interface S3SyncManifest {
   generation: string;
   createdAt: number;
   device: string;
+  /**
+   * The pushing device's sync identity (S3 Sync v2): peers tag merged rows
+   * with it as op.origin_device, so attribution is stable across device
+   * renames and never conflated with the sanitized bucket prefix above.
+   * Optional only for manifests written before S3 Sync v2 — the merge side
+   * refuses peers whose manifest omits it rather than fork attribution.
+   */
+  syncIdentity?: string;
   /** chroma set only: the db generation this index is consistent with. */
   pairedDbGeneration?: string;
   files: S3SyncManifestFile[];

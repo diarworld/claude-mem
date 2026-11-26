@@ -64,6 +64,9 @@ function makeManager(dir: string, transport: S3Transport, overrides: Record<stri
       CLAUDE_MEM_S3_SYNC_INCLUDE_ENV: 'true',
       CLAUDE_MEM_S3_SYNC_INCLUDE_CHROMA: 'true',
       CLAUDE_MEM_S3_SYNC_DEVICE: 'testbox',
+      CLAUDE_MEM_CLOUD_SYNC_TOKEN: '',
+      CLAUDE_MEM_CLOUD_SYNC_USER_ID: '',
+      CLAUDE_MEM_CLOUD_SYNC_HUB_URL: '',
       ...settingsOverrides,
     },
     {
@@ -396,7 +399,13 @@ describe('manager pull', () => {
     // The live-bucket smoke remains the integration guard that boot actually
     // finds the staged file there.
     const manager = new S3SyncManager(
-      { CLAUDE_MEM_S3_SYNC_ENABLED: 'true', CLAUDE_MEM_S3_SYNC_BUCKET: 'bucket' },
+      {
+        CLAUDE_MEM_S3_SYNC_ENABLED: 'true',
+        CLAUDE_MEM_S3_SYNC_BUCKET: 'bucket',
+        CLAUDE_MEM_CLOUD_SYNC_TOKEN: '',
+        CLAUDE_MEM_CLOUD_SYNC_USER_ID: '',
+        CLAUDE_MEM_CLOUD_SYNC_HUB_URL: '',
+      },
       {
         dataDir: dir,
         dbPath: join(dir, 'claude-mem.db'),
