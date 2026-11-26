@@ -51,7 +51,7 @@ function makeFixture(dir: string): string {
   return dir;
 }
 
-function makeManager(dir: string, transport: S3Transport, overrides: Record<string, unknown> = {}): S3SyncManager {
+function makeManager(dir: string, transport: S3Transport, overrides: Record<string, unknown> = {}, settingsOverrides: Record<string, string> = {}): S3SyncManager {
   return new S3SyncManager(
     {
       CLAUDE_MEM_S3_SYNC_ENABLED: 'true',
@@ -64,6 +64,7 @@ function makeManager(dir: string, transport: S3Transport, overrides: Record<stri
       CLAUDE_MEM_S3_SYNC_INCLUDE_ENV: 'true',
       CLAUDE_MEM_S3_SYNC_INCLUDE_CHROMA: 'true',
       CLAUDE_MEM_S3_SYNC_DEVICE: 'testbox',
+      ...settingsOverrides,
     },
     {
       transport,
@@ -264,6 +265,48 @@ describe('manager pull', () => {
     expect(existsSync(join(dir, 'backups', 'restore-pending.json'))).toBe(false);
     expect(existsSync(join(dir, 'backups', 'restore-chroma-pending.json'))).toBe(false);
     expect(existsSync(join(dir, 'backups', 's3sync-incoming'))).toBe(false);
+  });
+
+  test('INCLUDE_CHROMA=false skips the chroma set inside pull all without staging anything', async () => {
+    isolated = isolate();
+    const dir = isolated.dir;
+    const s3 = new FakeS3();
+    const { dbGen, chromaGen } = await pushBothSets(dir, s3);
+    // the pulling manager has chroma disabled; the bucket still holds both sets
+    const manager = makeManager(dir, s3, {}, { CLAUDE_MEM_S3_SYNC_INCLUDE_CHROMA: 'false' });
+
+    const result = await manager.pull({ set: 'all' });
+
+    expect(result.sets.map(s => s.set)).toEqual(['db', 'chroma']);
+    const db = result.sets.find(s => s.set === 'db')!;
+    const chroma = result.sets.find(s => s.set === 'chroma')!;
+    expect(db.status).toBe('pulled');
+    expect(chroma.status).toBe('skipped');
+    expect(chroma.reason).toMatch(/disabled/i);
+    // the db set staged normally
+    expect(existsSync(join(dir, 'backups', `claude-mem-${dbGen}-from-s3.db`))).toBe(true);
+    expect(readPendingRestore(join(dir, 'backups', 'restore-pending.json'))?.snapshot).toBe(`claude-mem-${dbGen}-from-s3.db`);
+    // nothing was downloaded or staged for chroma
+    expect(s3.order.filter(k => k.startsWith('down:claude-mem-sync/testbox/chroma/')).length).toBe(0);
+    expect(existsSync(join(dir, 'backups', 'restore-chroma-pending.json'))).toBe(false);
+    const s3syncDir = join(dir, 'state', 's3sync');
+    expect(existsSync(s3syncDir) ? readdirSync(s3syncDir).filter(n => n.startsWith('chroma-restore-')).length : 0).toBe(0);
+    // chroma's persisted lastPullAt stays untouched while the db's is stamped
+    const status = manager.status();
+    expect(status.sets.chroma.lastPullAt).toBeNull();
+    expect(status.sets.db.lastPullAt).not.toBeNull();
+  });
+
+  test('an explicit chroma pull with INCLUDE_CHROMA=false throws like runNow does', async () => {
+    isolated = isolate();
+    const dir = isolated.dir;
+    const s3 = new FakeS3();
+    await pushBothSets(dir, s3);
+    const manager = makeManager(dir, s3, {}, { CLAUDE_MEM_S3_SYNC_INCLUDE_CHROMA: 'false' });
+
+    await expect(manager.pull({ set: 'chroma' })).rejects.toThrow(/disabled/i);
+    expect(existsSync(join(dir, 'backups', 'restore-chroma-pending.json'))).toBe(false);
+    expect(existsSync(join(dir, 'backups', 'restore-pending.json'))).toBe(false);
   });
 
   test('a tampered remote file aborts the pull with a hard error before anything is staged', async () => {

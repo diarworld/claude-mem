@@ -582,6 +582,14 @@ export class S3SyncManager {
    * For set='all' the sets run in order (db, then chroma) and the first
    * failure is logged and rethrown, stopping the pull; the db restore of an
    * earlier set stays staged.
+   *
+   * Include gating: CLAUDE_MEM_S3_SYNC_INCLUDE_CHROMA=false gates pull
+   * exactly like push (controller amendment). An explicit chroma pull throws
+   * the same error as runNow('chroma'); inside 'all' the chroma set is
+   * SKIPPED with that reason — nothing is downloaded or staged for it and
+   * its persisted lastPullAt stays untouched — while the db set proceeds, so
+   * an operator who disabled chroma never gets the bucket's index swapped in
+   * at boot (enable it temporarily to restore an index explicitly).
    */
   async pull(request: S3SyncPullRequest): Promise<S3SyncPullResult> {
     if (this.stopped) throw new Error('S3 sync manager stopped');
@@ -589,6 +597,13 @@ export class S3SyncManager {
     const results: S3SyncPullSetResult[] = [];
     let stagedDbGeneration: string | null = null;
     for (const set of sets) {
+      if (set === 'chroma' && !this.chromaEnabled()) {
+        if (request.set === 'chroma') {
+          throw new Error('chroma sync is disabled by CLAUDE_MEM_S3_SYNC_INCLUDE_CHROMA=false');
+        }
+        results.push({ set: 'chroma', status: 'skipped', reason: 'chroma sync is disabled by CLAUDE_MEM_S3_SYNC_INCLUDE_CHROMA=false' });
+        continue;
+      }
       try {
         const result = await this.pullSet(set, request, stagedDbGeneration);
         if (result.status === 'pulled' && set === 'db' && result.generation) stagedDbGeneration = result.generation;

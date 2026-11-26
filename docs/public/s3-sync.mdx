@@ -76,13 +76,13 @@ are read from `~/.claude-mem/.env` only.
 | Key | Default | Meaning |
 |-----|---------|---------|
 | `CLAUDE_MEM_S3_SYNC_ENABLED` | `'false'` | Master switch. `'true'` constructs the manager at worker start; the CLI and endpoints answer with guidance while it is `'false'`. |
-| `CLAUDE_MEM_S3_SYNC_BUCKET` | `''` | Bucket name. **Empty = sync off** even when enabled. |
+| `CLAUDE_MEM_S3_SYNC_BUCKET` | `''` | Bucket name. **Set it before enabling** — an enabled install without a bucket name fails every push with raw storage errors (the set's phase goes to `error`). |
 | `CLAUDE_MEM_S3_SYNC_ENDPOINT` | `'https://storage.yandexcloud.net'` | S3-compatible endpoint. |
 | `CLAUDE_MEM_S3_SYNC_REGION` | `'ru-central1'` | Bucket region. |
 | `CLAUDE_MEM_S3_SYNC_DEVICE` | `''` | Bucket prefix for this machine. **Empty = `os.hostname()`.** See [Restore on a new machine](#restore-on-a-new-machine). |
 | `CLAUDE_MEM_S3_SYNC_DB_INTERVAL_HOURS` | `'6'` | db set push cadence in hours. Non-positive or garbage values fall back to the default. |
-| `CLAUDE_MEM_S3_SYNC_CHROMA_INTERVAL_HOURS` | `'24'` | chroma set push cadence in hours. |
-| `CLAUDE_MEM_S3_SYNC_INCLUDE_CHROMA` | `'true'` | `'false'` disables the chroma set: scheduled pushes skip it silently, an explicit `s3sync push --set chroma` answers `400`, and pulls ignore it. |
+| `CLAUDE_MEM_S3_SYNC_CHROMA_INTERVAL_HOURS` | `'24'` | chroma set push cadence in hours. Non-positive or garbage values fall back to the default. |
+| `CLAUDE_MEM_S3_SYNC_INCLUDE_CHROMA` | `'true'` | `'false'` disables the chroma set: scheduled pushes skip it silently, an explicit `s3sync push --set chroma` answers `400`, an explicit `s3sync pull --set chroma` fails the same way, and a pull of `all` stages only the db set (its chroma entry reports `skipped` with that reason). |
 | `CLAUDE_MEM_S3_SYNC_INCLUDE_ENV` | `'true'` | Whether `.env` (which holds your **plaintext** S3 keys and any other secrets) travels with the db set. Set `'false'` to exclude it. |
 | `CLAUDE_MEM_S3_SYNC_KEEP_GENERATIONS` | `'5'` | Generations kept per set in the bucket; older ones are pruned after each successful push. |
 
@@ -107,7 +107,12 @@ transport and the restore staging.
   (an empty bucket has no `LATEST`), the command prints
   `Nothing to pull from S3.` with the per-set reasons and **does not restart**.
   `--force` accepts a chroma index whose paired db generation does not match
-  the pulled db and marks every project's index for rebuild.
+  the pulled db and marks every project's index for rebuild. Two sharp edges
+  of `--generation`: with the default `--set all` it applies to the **db set
+  only** (the chroma set follows its own `LATEST`, which then refuses the
+  pairing with the explicitly pulled db generation unless `--force` is given),
+  and a generation that has since been pruned from the bucket is a hard error
+  (`generation no longer present`).
 
 The worker also exposes `GET /api/s3sync/status` (registered unconditionally —
 an unconfigured install answers `{"configured": false}`), `POST
@@ -150,7 +155,9 @@ The bucket layout is **per device** — `claude-mem-sync/<device>/…` — and
    pending-restore swap, and the staged chroma index is swapped in by a
    boot-time directory swap. The previous chroma directory is kept as
    `chroma-pre-restore-<ts>` (newest 2 are kept). Pulled db snapshots land in
-   `backups/` as `claude-mem-<generation>-from-s3.db`.
+   `backups/` as `claude-mem-<generation>-from-s3.db`. To roll a chroma swap
+   back manually: stop the worker and rename the newest
+   `chroma-pre-restore-<ts>` directory back to `chroma`.
 
 <Warning>
 **One device root = one writer.** Everything under
@@ -180,6 +187,7 @@ hostname fallback if machine names can collide or change).
   SHA-256-verified against the generation's manifest before anything is
   staged.
 - **Applies at boot only.** Staged restores are swapped in before the worker
-  opens the database, so a restore can never race a running worker. A restore
-  failure keeps the existing database and reports the error in
-  `s3sync status`.
+  opens the database, so a restore can never race a running worker. Restore
+  failures are logged by the worker at boot; the db restore outcome is visible
+  in `npx claude-mem backup status` (`Last restore: FAILED`), and a failed
+  apply leaves the existing data untouched — the worker starts unchanged.
