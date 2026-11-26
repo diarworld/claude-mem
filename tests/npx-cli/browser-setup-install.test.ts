@@ -48,7 +48,7 @@ process.env.DO_NOT_TRACK = '1';
 // CI hides the optional email question; these cases play a person at a terminal.
 delete process.env.CI;
 delete process.env.CLAUDE_MEM_ONLINE_OPTIN;
-const signupUrl = 'https://signup.example.test/waitlist';
+const signupUrl = 'https://signup.example.test/signup';
 process.env.CLAUDE_MEM_SIGNUP_URL = signupUrl;
 for (const key of ['ANTHROPIC_API_KEY', 'ANTHROPIC_AUTH_TOKEN', 'CLAUDE_MEM_PROVIDER', 'CLAUDE_MEM_OPENROUTER_API_KEY']) delete process.env[key];
 
@@ -93,17 +93,13 @@ mock.module('../../src/npx-cli/utils/paths.js', () => ({ ...cliPaths, readPlugin
 const lines: string[] = [];
 const questions: string[] = [];
 const textAnswers: string[] = [];
-const emailPrompt = 'Your work email (press Enter to skip):';
-const messagePrompt = 'Optionally: what are you working on, or how can we help you and your team? (Enter to skip)';
 const ranTasks: string[] = [];
 const offeredTasks: string[] = [];
-const providerMenus: Array<{ options: Array<{ value: string }>; initialValues: string[] }> = [];
 let workerStarts = 0;
 const workerStartStates: unknown[] = [];
 const workerStartSessions: unknown[] = [];
 const workerStartSettings: unknown[] = [];
 let fixtureWorkerResult: 'ready' | 'dead' = 'ready';
-let providerAnswer = 'cmem';
 let passwordAnswer: string | symbol = 'new-provider-key';
 mock.module('@clack/prompts', () => ({
   ...prompts,
@@ -112,11 +108,8 @@ mock.module('@clack/prompts', () => ({
   spinner: () => ({ start: (value: string) => lines.push(value), stop: (value: string) => lines.push(value), message: () => {} }),
   multiselect: async (options: { message: string; options: Array<{ value: string }>; initialValues: string[] }) => {
     questions.push(options.message);
-    // The terminal flow's provider prompt: CMEM Pro, whose sign-in is the login boundary below.
-    if (options.message.startsWith('Select Provider')) {
-      providerMenus.push(options);
-      return [providerAnswer];
-    }
+    // The agent-selection multiselects; the provider question is gone (a fresh
+    // install defaults to the internal model gateway).
     return ['claude-code'];
   },
   select: async (options: { message: string }) => {
@@ -215,10 +208,6 @@ const pairingStarts: number[] = [];
 const pairingStartHeaders: Headers[] = [];
 /** What cmem.ai's pairing poll answers next, in order (a 410 is a cancelled or expired checkout). */
 const pollAnswers: Array<{ status: number; body: unknown }> = [];
-const READY_BODY = {
-  status: 'ready', user_id: 'user-1', setup_token: 'sync-token', hub_url: 'https://cmem.ai/api/sync',
-  memory_key: 'pro-memory-key', memory_base_url: 'https://cmem.ai/api/gateway/v1', memory_model: 'cmem-memory', plan: 'trial', trial: { ends_at: '2026-11-22T00:00:00.000Z' },
-};
 const setupRequests: string[] = [];
 const signupRequests: Array<Record<string, unknown>> = [];
 const unexpected: string[] = [];
@@ -266,10 +255,8 @@ beforeEach(async () => {
   workerStartStates.length = 0;
   workerStartSessions.length = 0;
   workerStartSettings.length = 0;
-  providerMenus.length = 0;
   backgroundPolls = 0;
   fixtureWorkerResult = 'ready';
-  providerAnswer = 'cmem';
   passwordAnswer = 'new-provider-key';
   extraction.running = false; extraction.restartsWhileRunning = 0;
 });
@@ -302,13 +289,6 @@ async function waitForStage(stage: string): Promise<any> {
     await new Promise(resolve => setTimeout(resolve, 20));
   }
 }
-async function waitForCheckout(checkout: string): Promise<any> {
-  for (;;) {
-    const state = await browserState();
-    if (state.checkout?.state === checkout) return state;
-    await new Promise(resolve => setTimeout(resolve, 20));
-  }
-}
 const browserPost = (path: string, body: unknown) => realFetch(`${workerBase}${path}`, {
   method: 'POST', headers: { 'Content-Type': 'application/json', Origin: workerBase }, body: JSON.stringify(body),
 });
@@ -334,7 +314,7 @@ describe('install in GUI mode (interactive TTY, no --provider)', () => {
     await waitForStage('home-ready');
     await browserPost('/api/setup/complete', {});
     await installing;
-    expect(questions).toEqual([emailPrompt]);
+    expect(questions).toEqual([]);
   });
 
   it('offers the default model when the saved one is not allowed outside the gateway, and At Home still finishes', async () => {
@@ -350,44 +330,6 @@ describe('install in GUI mode (interactive TTY, no --provider)', () => {
     await installing;
     // The untouched default changes nothing: the saved value stays as it was, and nothing threw.
     expect(readSettings().CLAUDE_MEM_MODEL).toBe('my-gateway-model');
-  });
-
-  it('collects the work email and message in the terminal before opening setup', async () => {
-    const email = 'person@example.com';
-    const note = 'Onboarding a small team';
-    textAnswers.push(email, note);
-    const installing = runInstallCommand({});
-    const waiting = await waitForInstall('waiting');
-    expect(waiting.install.catalog.emailEnabled).toBe(false);
-    expect(JSON.stringify(waiting)).not.toContain(email);
-    expect(JSON.stringify(waiting)).not.toContain(note);
-    expect(readSettings()).toMatchObject({ CLAUDE_MEM_ONLINE_SIGNUP_EMAIL: email, CLAUDE_MEM_ONLINE_SIGNUP_NOTE: note, CLAUDE_MEM_ONLINE_SIGNUP_SENT: 'true' });
-    const selection = { ...waiting.install.catalog.defaults, agents: ['claude-code'] };
-    expect((await browserPost('/api/setup/install', { ...selection, email, note })).status).toBe(400);
-    expect((await browserPost('/api/setup/install', selection)).status).toBe(200);
-    const ready = await waitForInstall('ready');
-    expect(JSON.stringify(ready)).not.toContain(email);
-    expect(JSON.stringify(ready)).not.toContain(note);
-    await browserPost('/api/setup/choice', { branch: 'home', memoryBilling: 'existing' });
-    await waitForStage('home-ready');
-    await browserPost('/api/setup/complete', {});
-    await installing;
-    expect(questionsAtOpen).toEqual([[emailPrompt, messagePrompt]]);
-    expect(questions).toEqual([emailPrompt, messagePrompt]);
-    expect(signupRequests).toEqual([{ email, note, source: 'npx-installer', version: packageVersion, platform: process.platform }]);
-  });
-
-  it('keeps the work email when the person skips the message before explicit browser setup', async () => {
-    textAnswers.push('email-only@example.com', '');
-    const install = runInstallCommand({ setup: 'browser' });
-    await waitForStage('waiting-for-choice');
-    expect(questionsAtOpen).toEqual([[emailPrompt, messagePrompt]]);
-    expect(signupRequests).toHaveLength(1);
-    expect(signupRequests[0]).toMatchObject({ email: 'email-only@example.com', note: '' });
-    await browserPost('/api/setup/choice', { branch: 'home', memoryBilling: 'existing' });
-    await waitForStage('home-ready');
-    await browserPost('/api/setup/complete', {});
-    await install;
   });
 
   it('leaves all choices pending when deferred, then resumes without stopping or copying the worker', async () => {
@@ -422,26 +364,6 @@ describe('install in GUI mode (interactive TTY, no --provider)', () => {
     expect(readSettings().CLAUDE_MEM_MODEL).toBe('sonnet');
   });
 
-  it('finishes an opt-in saved by an older installer when resuming its pending choices', async () => {
-    await runInstallCommand({ setup: 'defer' });
-    const deferred = await browserState();
-    const email = 'earlier@example.com';
-    const note = 'A message from the previous install';
-    const catalog = { ...deferred.install.catalog, emailEnabled: true };
-    const selection = { ...catalog.defaults, agents: ['claude-code'], email, note };
-    writeFileSync(statePath, JSON.stringify({ ...deferred, install: { ...deferred.install, catalog, status: 'installing', selection } }));
-    const resume = runInstallCommand({ setup: 'resume' });
-    const ready = await waitForStage('waiting-for-choice');
-    expect(JSON.stringify(ready)).not.toContain(email);
-    expect(readSettings()).toMatchObject({ CLAUDE_MEM_ONLINE_SIGNUP_EMAIL: email, CLAUDE_MEM_ONLINE_SIGNUP_NOTE: note, CLAUDE_MEM_ONLINE_SIGNUP_SENT: 'true' });
-    expect(questions).toEqual([]);
-    expect(signupRequests).toHaveLength(1);
-    await browserPost('/api/setup/choice', { branch: 'home', memoryBilling: 'existing' });
-    await waitForStage('home-ready');
-    await browserPost('/api/setup/complete', {});
-    await resume;
-  });
-
   it('At Home: starts the worker, opens the setup page, asks for no login, and finishes when the page does', async () => {
     const install = runInstallCommand({});
     await waitForStage('waiting-for-choice');
@@ -461,12 +383,13 @@ describe('install in GUI mode (interactive TTY, no --provider)', () => {
     // useSubscriptionAuth(): local, logged-in Claude SDK account; no claude-mem login at all.
     expect(readSettings()).toMatchObject({ CLAUDE_MEM_PROVIDER: 'claude', CLAUDE_MEM_CLAUDE_AUTH_METHOD: 'subscription', CLAUDE_MEM_CLOUD_SYNC_TOKEN: '' });
     expect(pairingStarts).toEqual([]);
-    // Enter skips signup and goes on to the browser, where the person chooses how to use memory.
-    expect(questionsAtOpen).toEqual([[emailPrompt]]);
-    expect(questions).toEqual([emailPrompt]);
+    // No terminal questions at all: no email opt-in, no provider menu.
+    expect(questionsAtOpen).toEqual([[]]);
+    expect(questions).toEqual([]);
     expect(signupRequests).toEqual([]);
     expect(JSON.parse(readFileSync(statePath, 'utf8'))).toMatchObject({ status: 'complete', choice: { branch: 'home' }, installer: { stage: 'home-ready' } });
-    expect(lines.join('\n')).toContain('Not required (local provider)');
+    expect(lines.join('\n')).toContain('Kept existing configuration');
+    expect(lines.join('\n')).not.toContain('cmem.ai');
     expect(lines.join('\n')).toContain('claude-mem installed successfully!');
     expect(existsSync(sessionPath)).toBe(false);
     expect(ranTasks).toContain('Claude Code: registering plugin');
@@ -502,68 +425,31 @@ describe('install in GUI mode (interactive TTY, no --provider)', () => {
     expect(lines.join('\n')).toMatch(/Agents: .*claude-code, codex-cli/);
   });
 
-  it('On The Go: the pairing starts only after the choice, checkout runs when the page asks, and setup finishes once paid', async () => {
+  it('On The Go: the choice also resolves locally, with no pairing, no checkout and no cmem.ai request', async () => {
     writeFileSync(intentCredentialsPath, JSON.stringify(intentCredentials), { mode: 0o600 });
     const install = runInstallCommand({});
     await waitForStage('waiting-for-choice');
     expect(pairingStarts).toEqual([]);
     expect((await browserPost('/api/setup/checkout', {})).status).toBe(409);
     expect((await browserPost('/api/setup/choice', { branch: 'go', memoryBilling: 'hosted' })).status).toBe(200);
-    const handOff = await waitForStage('go-awaiting-checkout');
-    expect(pairingStarts).toHaveLength(1);
-    expect(pairingStartHeaders[0].get('X-Intent-Install-Id')).toBe(intentCredentials.install_id);
-    expect(pairingStartHeaders[0].get('X-Intent-Token')).toBe(intentCredentials.intent_token);
-    expect(handOff.choice).toMatchObject({ branch: 'go', memoryBilling: 'hosted' });
+    await waitForStage('home-ready');
+    expect(pairingStarts).toEqual([]);
     expect(opened).toEqual([`${workerBase}/?setup=1`]);
-    // Not before checkout.
-    expect((await browserPost('/api/setup/complete', {})).status).toBe(409);
-
-    pollAnswers.push({ status: 200, body: READY_BODY });
-    expect((await browserPost('/api/setup/checkout', {})).status).toBe(200);
-    const paid = await waitForCheckout('paid');
-    expect(paid.alreadyPro).toBe(true);
-    // The existing path: the pairing's checkout URL (/api/pro/trial/claim), opened by the installer.
-    expect(opened).toEqual([`${workerBase}/?setup=1`, `${startOrigin}/api/pro/trial/claim?pairing=${pairingId}&trial=1`]);
-    // Paid checkout promotes the staged key to the active observer configuration.
-    expect(readSettings()).toMatchObject({
-      CLAUDE_MEM_PRO_TRIAL_STATE: 'active', CLAUDE_MEM_CLOUD_SYNC_TOKEN: 'sync-token',
-      CLAUDE_MEM_PROVIDER: 'openrouter', CLAUDE_MEM_OPENROUTER_API_KEY: 'pro-memory-key',
-      CLAUDE_MEM_OPENROUTER_BASE_URL: READY_BODY.memory_base_url,
-      CLAUDE_MEM_OPENROUTER_MODEL: READY_BODY.memory_model, CLAUDE_MEM_PRO_MEMORY_KEY: '',
-    });
-    expect(JSON.parse(readFileSync(intentCredentialsPath, 'utf8'))).toEqual(intentCredentials);
-
-    expect((await browserPost('/api/setup/complete', {})).status).toBe(200);
-    await install;
-    expect(lines.join('\n')).toMatch(/Account: .*CMEM Pro .*Free Trial active/);
-    expect(lines.join('\n')).not.toContain('Open this URL');
     expect(unexpected).toEqual([]);
-  });
-
-  it('On The Go: a cancelled checkout returns to the checkout screen and the next Continue starts a fresh one', async () => {
-    writeFileSync(intentCredentialsPath, JSON.stringify(intentCredentials), { mode: 0o600 });
-    const install = runInstallCommand({});
-    await waitForStage('waiting-for-choice');
-    await browserPost('/api/setup/choice', { branch: 'go', memoryBilling: 'hosted' });
-    await waitForStage('go-awaiting-checkout');
-
-    pollAnswers.push({ status: 410, body: {} });
-    await browserPost('/api/setup/checkout', {});
-    const failed = await waitForCheckout('failed');
-    expect(failed.checkout.error).toMatch(/Continue to open it again/);
-    expect(readSettings().CLAUDE_MEM_PRO_TRIAL_STATE).toBeUndefined();
-
-    pollAnswers.push({ status: 200, body: READY_BODY });
-    await browserPost('/api/setup/checkout', {});
-    await waitForCheckout('paid');
-    expect(pairingStarts).toHaveLength(2);
-    for (const headers of pairingStartHeaders) {
-      expect(headers.get('X-Intent-Install-Id')).toBe(intentCredentials.install_id);
-      expect(headers.get('X-Intent-Token')).toBe(intentCredentials.intent_token);
-    }
-    await browserPost('/api/setup/complete', {});
+    // useSubscriptionAuth() already ran during the choice: the hosted-billing
+    // pick changes nothing about the local-only resolution.
+    expect(readSettings()).toMatchObject({ CLAUDE_MEM_PROVIDER: 'claude', CLAUDE_MEM_CLAUDE_AUTH_METHOD: 'subscription' });
+    // The worker still refuses Finish Setup for a non-home choice; the funnel
+    // contract becomes home-only in a later task. Release the installer the
+    // way a completed page would, through the state it serves.
+    expect((await browserPost('/api/setup/complete', {})).status).toBe(409);
+    const state = JSON.parse(readFileSync(statePath, 'utf8'));
+    writeFileSync(statePath, JSON.stringify({ ...state, status: 'complete', completedAt: new Date().toISOString() }));
     await install;
-    expect(readSettings().CLAUDE_MEM_PRO_TRIAL_STATE).toBe('active');
+    expect(JSON.parse(readFileSync(intentCredentialsPath, 'utf8'))).toEqual(intentCredentials);
+    expect(lines.join('\n')).toContain('Kept existing configuration');
+    expect(lines.join('\n')).not.toContain('cmem.ai');
+    expect(unexpected).toEqual([]);
   });
 
   it('At Home: Finish Setup while the extraction runs finishes the terminal without restarting the worker, so the run goes on', async () => {
@@ -582,39 +468,6 @@ describe('install in GUI mode (interactive TTY, no --provider)', () => {
     expect(extraction.running).toBe(true);
     expect(JSON.parse(readFileSync(statePath, 'utf8')).status).toBe('complete');
     expect(lines.join('\n')).toContain('claude-mem installed successfully!');
-  });
-
-  it('On The Go: cloud sync needs a restart, which waits for the running extraction to finish', async () => {
-    writeFileSync(intentCredentialsPath, JSON.stringify(intentCredentials), { mode: 0o600 });
-    const install = runInstallCommand({});
-    let installed = false;
-    void install.then(() => { installed = true; });
-    await waitForStage('waiting-for-choice');
-    await browserPost('/api/setup/choice', { branch: 'go', memoryBilling: 'hosted' });
-    await waitForStage('go-awaiting-checkout');
-    pollAnswers.push({ status: 200, body: READY_BODY });
-    await browserPost('/api/setup/checkout', {});
-    await waitForCheckout('paid');
-    extraction.running = true;
-    expect((await browserPost('/api/setup/complete', {})).status).toBe(200);
-    // The terminal holds the restart for as long as the run takes; the page already shows setup complete.
-    for (let poll = 0; poll < 100 && !lines.some(line => line.includes('restarts to apply your settings once it finishes reading your goals, work and rules')); poll++) {
-      await new Promise(resolve => setTimeout(resolve, 20));
-    }
-    expect(lines.join('\n')).toContain('restarts to apply your settings once it finishes reading your goals, work and rules');
-    for (let poll = 0; poll < 100 && backgroundPolls < 2; poll++) {
-      await new Promise(resolve => setTimeout(resolve, 20));
-    }
-    expect(backgroundPolls).toBeGreaterThanOrEqual(2);
-    expect(installed).toBe(false);
-    expect(workerStarts).toBe(1);
-    expect((await browserState()).status).toBe('complete');
-
-    extraction.running = false;
-    await install;
-    expect(workerStarts).toBe(2);
-    expect(extraction.restartsWhileRunning).toBe(0);
-    expect(lines.join('\n')).toMatch(/Account: .*CMEM Pro .*Free Trial active/);
   });
 
   it('a machine with a saved signup reopens the GUI without repeating the terminal questions', async () => {
@@ -677,7 +530,7 @@ describe('install in GUI mode (interactive TTY, no --provider)', () => {
     expect(JSON.parse(readFileSync(statePath, 'utf8')).status).toBe('pending');
     expect(existsSync(sessionPath)).toBe(false);
     expect(opened).toEqual([]);
-    expect(questions).toEqual([emailPrompt]);
+    expect(questions).toEqual([]);
   });
 
   it('releases the GUI session when the browser handoff fails and propagates the server error', async () => {
@@ -825,34 +678,36 @@ describe('update keeps completed setup and asks only for missing requirements', 
     expect(lines.join('\n')).not.toContain('updated successfully');
   });
 
-  it('restores a missing CMEM key through sign-in without replaying setup or checkout for an existing account', async () => {
+  it('aborts an update whose saved gateway key is missing, without touching the configuration', async () => {
     provision({ CLAUDE_MEM_PROVIDER: 'openrouter', CLAUDE_MEM_OPENROUTER_BASE_URL: 'https://cmem.ai/api/gateway/v1' });
-    writeFileSync(intentCredentialsPath, JSON.stringify(intentCredentials), { mode: 0o600 });
-    pollAnswers.push({ status: 200, body: READY_BODY });
-    // Simulate Return only when the login handoff has attached its input listener.
-    const returnKey = setInterval(() => {
-      if (process.stdin.listenerCount('data')) process.stdin.emit('data', Buffer.from('\r'));
-    }, 10);
-    try { await runInstallCommand({ update: true }); }
-    finally { clearInterval(returnKey); }
+    // The local-only build has no account flow to refill a gateway key: say how
+    // to restore it instead of starting an OAuth login.
+    await expect(runInstallCommand({ update: true })).rejects.toThrow('EXIT_1');
     expect(questions).toEqual([]);
     expect(setupRequests).toEqual([]);
-    expect(pairingStarts).toHaveLength(1);
-    expect(opened).toEqual([`${startOrigin}/login?next=${encodeURIComponent(`/api/pro/trial/claim?pairing=${pairingId}&login_only=1`)}`]);
-    expect(readSettings().CLAUDE_MEM_OPENROUTER_API_KEY).toBe('pro-memory-key');
-    expect(lines.join('\n')).toContain('OAuth login complete');
+    expect(pairingStarts).toEqual([]);
+    expect(opened).toEqual([]);
+    expect(lines.join('\n')).toContain('Save CLAUDE_MEM_OPENROUTER_API_KEY in ~/.claude-mem/settings.json');
+    expect(lines.join('\n')).not.toContain('updated successfully');
+    expect(readSettings().CLAUDE_MEM_OPENROUTER_API_KEY).toBeUndefined();
+    expect(readSettings().CLAUDE_MEM_PROVIDER).toBe('openrouter');
   });
 
   it('asks for an unconfigured provider without replaying completed agent setup', async () => {
     provision({});
-    providerAnswer = 'claude';
     await runInstallCommand({ update: true });
-    expect(questions).toHaveLength(2);
-    expect(questions[0]).toStartWith('Select Provider');
-    expect(questions[1]).toStartWith('Which Claude model');
+    // No provider menu any more: an interactive run with no provider goes to
+    // the internal model gateway, applies the GPUStack defaults and asks for
+    // the missing key in the terminal.
+    expect(questions).toEqual(['Paste your GPUStack API key:']);
     expect(setupRequests).toEqual([]);
     expect(opened).toEqual([]);
-    expect(readSettings().CLAUDE_MEM_PROVIDER).toBe('claude');
+    expect(readSettings()).toMatchObject({
+      CLAUDE_MEM_PROVIDER: 'openrouter',
+      CLAUDE_MEM_OPENROUTER_BASE_URL: 'https://gpustack.data.lmru.tech/v1',
+      CLAUDE_MEM_OPENROUTER_MODEL: 'glm-5.3-flash',
+      CLAUDE_MEM_OPENROUTER_API_KEY: 'new-provider-key',
+    });
   });
 });
 
@@ -875,7 +730,7 @@ describe('install with --provider claude (interactive TTY)', () => {
     expect(pairingStarts).toEqual([]);
     expect(questions.some(q => q.startsWith('Which Claude model'))).toBe(true);
     expect(readSettings()).toMatchObject({ CLAUDE_MEM_PROVIDER: 'claude', CLAUDE_MEM_CLAUDE_AUTH_METHOD: 'subscription' });
-    expect(lines.join('\n')).toContain('--provider claude runs memory on your own Anthropic plan.');
+    expect(lines.join('\n')).toContain('Skipping claude-mem sign-in: this build installs fully locally.');
     expect(existsSync(statePath)).toBe(false);
     expect(workerStartStates.every(state => state === null)).toBe(true);
     expect(workerStartSettings).not.toHaveLength(0);
@@ -888,13 +743,19 @@ describe('install with --provider claude (interactive TTY)', () => {
 // #5675 site 3: the owner chose a personal key with --provider. Cancelling the key prompt is a stop,
 // never a request for the Anthropic plan.
 describe('install with --provider gemini|openrouter and no key (interactive TTY)', () => {
-  for (const [provider, label] of [['gemini', 'Gemini'], ['openrouter', 'OpenRouter']] as const) {
+  for (const [provider, label] of [['gemini', 'Gemini'], ['openrouter', 'GPUStack']] as const) {
     it(`cancelling the ${label} key prompt stops the install and writes no provider`, async () => {
       const before = readFileSync(settingsPath, 'utf8');
       passwordAnswer = prompts.CANCEL_SYMBOL;
-      await expect(promptProvider({ provider, providerSource: 'flag' }, null, '0.0.0-test'))
-        .rejects.toThrow('EXIT_1');
-      expect(lines.join('\n')).toContain(`${label} setup cancelled`);
+      if (provider === 'gemini') {
+        // The owner named gemini with --provider: a cancel prints a cancel line and exits 1.
+        await expect(promptProvider({ provider, providerSource: 'flag' })).rejects.toThrow('EXIT_1');
+        expect(lines.join('\n')).toContain('Gemini setup cancelled');
+      } else {
+        // The gateway prompt throws its remediation without touching settings.
+        await expect(promptProvider({ provider, providerSource: 'flag' }))
+          .rejects.toThrow('Setup cancelled: no GPUStack API key was entered');
+      }
       expect(questions).toEqual([`Paste your ${label} API key:`]);
       expect(readFileSync(settingsPath, 'utf8')).toBe(before);
       expect(readSettings().CLAUDE_MEM_PROVIDER).toBeUndefined();
@@ -902,7 +763,7 @@ describe('install with --provider gemini|openrouter and no key (interactive TTY)
     });
 
     it(`a pasted ${label} key still saves the chosen provider`, async () => {
-      await promptProvider({ provider, providerSource: 'flag' }, null, '0.0.0-test');
+      await promptProvider({ provider, providerSource: 'flag' });
       expect(readSettings().CLAUDE_MEM_PROVIDER).toBe(provider);
     });
   }

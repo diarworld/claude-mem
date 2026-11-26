@@ -286,8 +286,7 @@ export function buildInstallerOAuthStartBody(
 
 /**
  * Starts an OAuth pairing. The pairing takes no email address or identity from
- * the CLI. The only email the CLI ever sends is the optional opt-in
- * (promptEmailOptIn), which goes to the waitlist and is never used to sign in.
+ * the CLI: the terminal asks for nothing, and the browser signs in directly.
  */
 export async function startInstallerOAuthPairing(
   opts: { source?: string; timeoutMs?: number; teamInvite?: string; setupFlowId?: string; cloudSyncOffer?: SetupCloudSyncOffer } = {},

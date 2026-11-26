@@ -33,12 +33,6 @@ export interface DeliveredCmemMemoryCredentials {
   memoryModel: string;
 }
 
-export interface ResolvedCmemMemoryCredentials extends DeliveredCmemMemoryCredentials {
-  source: 'fresh' | 'staged' | 'configured';
-  /** Fresh material may safely retry the gateway and reset the notice marker. */
-  clearFallback: boolean;
-}
-
 type SettingsLike = Partial<Record<keyof SettingsDefaults, unknown>>;
 
 function nonEmptyString(value: unknown): string | null {
@@ -192,58 +186,6 @@ export function hostObserverCandidatePorts(
   return [preferred, fallback].filter((port) => worker == null || port !== worker);
 }
 
-/**
- * Resolve the account-owned cmem gateway key without consulting environment
- * overrides (callers pass the raw settings document). Priority is deliberate:
- * this run's one-shot delivery, then staged delivery, then an already-active
- * cmem OpenRouter configuration from an earlier install.
- */
-export function resolveCmemMemoryCredentials(
-  delivered: DeliveredCmemMemoryCredentials | null,
-  settings: SettingsLike,
-): ResolvedCmemMemoryCredentials | null {
-  if (delivered) {
-    return {
-      memoryKey: delivered.memoryKey,
-      memoryBaseUrl: delivered.memoryBaseUrl,
-      memoryModel: delivered.memoryModel,
-      source: 'fresh',
-      clearFallback: true,
-    };
-  }
-
-  const stagedKey = nonEmptyString(settings.CLAUDE_MEM_PRO_MEMORY_KEY);
-  if (stagedKey) {
-    return {
-      memoryKey: stagedKey,
-      memoryBaseUrl: nonEmptyString(settings.CLAUDE_MEM_PRO_MEMORY_BASE_URL) ?? CMEM_PRO_BASE_URL,
-      memoryModel: nonEmptyString(settings.CLAUDE_MEM_PRO_MEMORY_MODEL) ?? CMEM_PRO_MODEL,
-      source: 'staged',
-      // A staged key moved out of a failed configured slot retains the marker;
-      // a newly delivered key clears it in completeCmemTrialPairing.
-      clearFallback: !nonEmptyString(settings.CLAUDE_MEM_PRO_FALLBACK_AT),
-    };
-  }
-
-  const configuredKey = nonEmptyString(settings.CLAUDE_MEM_OPENROUTER_API_KEY);
-  const configuredBaseUrl = nonEmptyString(settings.CLAUDE_MEM_OPENROUTER_BASE_URL);
-  if (configuredKey && configuredBaseUrl && isCmemGatewayUrl(configuredBaseUrl)) {
-    return {
-      memoryKey: configuredKey,
-      memoryBaseUrl: configuredBaseUrl,
-      memoryModel: nonEmptyString(settings.CLAUDE_MEM_OPENROUTER_MODEL) ?? CMEM_PRO_MODEL,
-      source: 'configured',
-      // Merely rerunning install is not evidence that a rejected key is funded
-      // again. Keep fallback active until fresh material or a gateway probe.
-      clearFallback: false,
-    };
-  }
-
-  return null;
-}
-
-/** Atomically move staged/current credentials into the active provider slot. */
-
 export function resolveHostObserverPort(
   workerPort: string | number | undefined,
   env: NodeJS.ProcessEnv = process.env,
@@ -301,21 +243,6 @@ export function buildHostObserverSettings(
     CLAUDE_MEM_OPENROUTER_BASE_URL: `http://127.0.0.1:${port}/v1`,
     CLAUDE_MEM_OPENROUTER_MODEL: observerModel,
     CLAUDE_MEM_OPENROUTER_API_KEY: HOST_OBSERVER_DUMMY_API_KEY,
-  };
-}
-
-export function buildCmemActivationSettings(
-  credentials: ResolvedCmemMemoryCredentials,
-): Record<string, string> {
-  return {
-    CLAUDE_MEM_PROVIDER: 'openrouter',
-    CLAUDE_MEM_OPENROUTER_BASE_URL: credentials.memoryBaseUrl,
-    CLAUDE_MEM_OPENROUTER_MODEL: credentials.memoryModel,
-    CLAUDE_MEM_OPENROUTER_API_KEY: credentials.memoryKey,
-    CLAUDE_MEM_PRO_MEMORY_KEY: '',
-    CLAUDE_MEM_PRO_MEMORY_BASE_URL: '',
-    CLAUDE_MEM_PRO_MEMORY_MODEL: '',
-    ...(credentials.clearFallback ? { CLAUDE_MEM_PRO_FALLBACK_AT: '' } : {}),
   };
 }
 

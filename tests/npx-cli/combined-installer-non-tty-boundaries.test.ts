@@ -241,7 +241,7 @@ it('keeps a persisted OpenRouter account without making an OAuth request', async
   expect(process.stdin.isTTY).toBe(false);
   expect(runtimeTaskCalls).toBe(2);
   expect(integrationCalls).toBe(1);
-  expect(lines.join('\n')).toContain('Kept existing account (no login this run)');
+  expect(lines.join('\n')).toContain('Kept existing configuration');
   expect(lines.join('\n')).toContain('claude-mem installed successfully!');
   expect(httpCalls).toBe(0);
   expect(http).not.toHaveBeenCalled();

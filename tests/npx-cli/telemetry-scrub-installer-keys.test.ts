@@ -13,4 +13,20 @@ describe('installer telemetry keys survive the scrubber', () => {
       user_code: 'ABCD-2345',
     })).toEqual({ phase: 'login', provider_source: 'default' });
   });
+
+  it('no longer allowlists the deleted trial and deferred-offer keys', () => {
+    // installer_oauth_deferred and trial_activated are gone from EVENT_NAMES;
+    // the keys only they sent must not survive the scrubber either.
+    for (const key of ['stage', 'trial_days', 'trial_variant', 'offer_surface', 'funnel_source']) {
+      expect(ALLOWED_PROPERTY_KEYS.has(key)).toBe(false);
+    }
+    expect(scrubProperties({
+      stage: 'awaiting_checkout',
+      trial_days: 7,
+      trial_variant: 'a',
+      offer_surface: 'installer',
+      funnel_source: 'npx',
+      phase: 'enrollment',
+    })).toEqual({ phase: 'enrollment' });
+  });
 });

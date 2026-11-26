@@ -72,14 +72,8 @@ function runInstaller(missingKey: boolean) {
       }));
       mock.module(at('services/telemetry/cli-telemetry.js'), () => ({ captureCliEvent: async (name, properties) => console.log('EVENT:' + name + ':' + JSON.stringify(properties)) }));
       mock.module(at('shared/intent-credentials.js'), () => ({ readIntentCredentials: () => ({}), intentCredentialHeaders: () => ({}) }));
-      globalThis.fetch = async (_url, options) => {
-        const request = JSON.parse(options.body);
-        if (request.source !== 'npx-installer-deferred') throw new Error('Unexpected network request');
-        const pairing = 'a'.repeat(32);
-        return new Response(JSON.stringify({ pairing_id: pairing, secret: 'b'.repeat(48), user_code: 'ABCD-EFGH',
-          authorization_url: 'https://cmem.ai/login?next=' + encodeURIComponent('/api/pro/trial/claim?pairing=' + pairing + '&login_only=1'),
-          checkout_url: 'https://cmem.ai/api/pro/trial/claim?pairing=' + pairing + '&trial=7' }));
-      };
+      // Local-only build: nothing may reach the network during a non-TTY install.
+      globalThis.fetch = async (url) => { throw new Error('Unexpected network request: ' + url); };
       const { runInstallCommand } = await import(at('npx-cli/commands/install.js'));
       await runInstallCommand(${missingKey ? "{ provider: 'gemini', noAutoStart: true }" : "{ noAutoStart: true }"});
     `], { env: isolatedEnv(root), stdout: 'pipe', stderr: 'pipe', timeout: 20_000 });
@@ -102,16 +96,16 @@ describe('non-TTY installer', () => {
     expect(result.output).not.toContain('EVENT:install_completed');
   });
 
-  it('copies marketplace content and offers sign-in before completion', () => {
+  it('copies marketplace content and completes without any sign-in', () => {
     const result = runInstaller(false);
     if (result.exitCode !== 0) console.error(result.output);
     expect(result.exitCode).toBe(0);
     expect(result.output).not.toContain('PASSWORD_CALLED');
     expect(result.output).toContain('defaulting to your Anthropic plan');
-    const link = result.output.indexOf('Sign-in link: https://cmem.ai/login?');
+    expect(result.output).toContain('Skipping claude-mem sign-in: this build installs fully locally.');
+    expect(result.output).not.toContain('Sign-in link');
     const completion = result.output.indexOf('EVENT:install_completed:');
-    expect(link).toBeGreaterThan(-1);
-    expect(completion).toBeGreaterThan(link);
+    expect(completion).toBeGreaterThan(-1);
     expect(result.output).toContain('"runtime_mode":"worker"');
     const dependencies = result.output.indexOf('DEPENDENCIES_READY');
     const marker = result.output.indexOf('INSTALL_MARKER:');

@@ -94,8 +94,6 @@ const EVENT_NAMES = [
   'installer_oauth_completed',
   'installer_oauth_timeout',
   'installer_oauth_start_failed',
-  'installer_oauth_deferred',
-  'trial_activated',
   'uninstall_completed',
   'auto_update_applied',
   'auto_update_failed',

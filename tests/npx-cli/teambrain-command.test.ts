@@ -10,7 +10,7 @@ import {
   parseTeamBrainInvite,
   resolveTeamBrainUrl,
 } from '../../src/npx-cli/commands/teambrain.js';
-import { joinFailedMessage } from '../../src/npx-cli/install/pairing.js';
+import { joinFailedMessage, parseTrialReadyBody } from '../../src/npx-cli/install/pairing.js';
 import {
   MOCK_HUB_URL,
   MOCK_INVITE_TOKEN,
@@ -233,6 +233,79 @@ const JOINED = {
   CLAUDE_MEM_CLOUD_SYNC_USER_ID: MOCK_SEAT_USER_ID,
   CLAUDE_MEM_CLOUD_SYNC_HUB_URL: MOCK_HUB_URL,
 };
+
+// The poll-parse contract the teambrain join shares with the installer pairing
+// (moved from the deleted installer trial-contract tests; parseTrialReadyBody
+// lives in install/pairing.ts, which teambrain still uses).
+describe('parseTrialReadyBody (poll parse shared with teambrain join)', () => {
+  it('reads a TeamBrain seat holder: sync only, the team and its TeamBrain address', () => {
+    expect(parseTrialReadyBody({
+      status: 'ready',
+      user_id: 'seat_user',
+      setup_token: 'seat_setup_token',
+      hub_url: 'https://sync.cmem.ai',
+      plan: 'teambrain_seat',
+      team: { id: 'team_1', name: 'Acme Eng' },
+      teambrain_url: 'https://cmem.ai',
+    })).toEqual({
+      userId: 'seat_user',
+      setupToken: 'seat_setup_token',
+      hubUrl: 'https://sync.cmem.ai',
+      memory: null,
+      plan: 'teambrain_seat',
+      trialEndsAt: null,
+      team: { id: 'team_1', name: 'Acme Eng' },
+      teambrainUrl: 'https://cmem.ai',
+    });
+  });
+
+  it('rejects malformed and non-ready poll responses', () => {
+    expect(parseTrialReadyBody(null)).toBeNull();
+    expect(parseTrialReadyBody({ status: 'pending' })).toBeNull();
+    expect(parseTrialReadyBody({
+      status: 'ready',
+      user_id: 'user_123',
+      setup_token: 'setup_secret',
+    })).toBeNull();
+    expect(parseTrialReadyBody({
+      status: 'ready',
+      user_id: 123,
+      setup_token: 'setup_secret',
+      hub_url: 'https://sync.cmem.ai',
+    })).toBeNull();
+    expect(parseTrialReadyBody({
+      status: 'ready',
+      user_id: 'user_123',
+      setup_token: '   ',
+      hub_url: 'https://sync.cmem.ai',
+    })).toBeNull();
+  });
+
+  it('falls back safely for optional fields from a partially upgraded server', () => {
+    expect(parseTrialReadyBody({
+      status: 'ready',
+      user_id: 'user_123',
+      setup_token: 'setup_secret',
+      hub_url: 'https://sync.cmem.ai',
+      memory_key: '',
+      memory_base_url: '',
+      memory_model: '',
+      plan: 'future-plan',
+      trial: { ends_at: 123 },
+      team: { name: 'no id' },
+      teambrain_url: '',
+    })).toEqual({
+      userId: 'user_123',
+      setupToken: 'setup_secret',
+      hubUrl: 'https://sync.cmem.ai',
+      memory: null,
+      plan: 'trial',
+      trialEndsAt: null,
+      team: null,
+      teambrainUrl: null,
+    });
+  });
+});
 
 describe('npx claude-mem teambrain join', () => {
   for (const status of [403, 500]) {

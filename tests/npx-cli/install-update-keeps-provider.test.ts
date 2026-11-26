@@ -39,7 +39,7 @@ const ENV_KEYS = [
 async function runUpdateProviderStep(): Promise<{ provider: string; options: InstallOptions }> {
   const options: InstallOptions = {};
   validateNonInteractiveProvider(options, createInstallSummary());
-  const provider = await promptProvider(options, null, '0.0.0-test');
+  const provider = await promptProvider(options);
   return { provider, options };
 }
 

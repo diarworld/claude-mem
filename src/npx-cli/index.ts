@@ -37,7 +37,7 @@ ${styleText('bold', 'Install Commands')} (no Bun required):
   ${styleText('cyan', 'npx claude-mem install --setup browser|defer')}   Open web setup now, or save it for later (works from agent shells)
   ${styleText('cyan', 'npx claude-mem install --ide <id>')}   Install for specific IDE
   ${styleText('cyan', 'npx claude-mem install --ide dsh --dsh-profile <name>')}   Install DeepSeek Harness (default profile: web)
-  ${styleText('cyan', 'npx claude-mem install --provider claude|codex|gemini|openrouter|host')}   Set LLM provider explicitly. Without install flags, agent shells save setup for the web GUI. codex, gemini and openrouter need a cmem.ai sign-in in a browser; claude and host need no claude-mem account
+  ${styleText('cyan', 'npx claude-mem install --provider claude|codex|gemini|openrouter|host')}   Set LLM provider explicitly. Without install flags, agent shells save setup for the web GUI. codex, gemini and openrouter are bring-your-own providers; a fresh install defaults to the internal model gateway (openrouter transport)
   ${styleText('cyan', 'npx claude-mem install --model <id>')}   Set Claude or Codex model (when provider=claude|codex)
   ${styleText('cyan', 'npx claude-mem install --no-auto-start')}   Skip worker auto-start at the end
   ${styleText('cyan', 'npx claude-mem install --disable-auto-memory')}   Explicitly disable Claude Code native auto-memory
@@ -146,10 +146,11 @@ function parseInstallOptions(argv: string[]): InstallOptions {
   }
   const ide = flag('ide');
   let resolvedProvider = provider as InstallOptions['provider'];
-  // Non-TTY grok-bot: CMEM Pro is the user default. The 'cmem' sentinel is
-  // prompt-only (install.ts maps it to openrouter + cmem-observer + OAuth).
-  // Interactive installs still get the CMEM/Claude prompt. `--provider host`
-  // stays an explicit loopback-shim opt-in.
+  // Non-TTY grok-bot: the internal model gateway is the user default (a fresh
+  // install fills the empty provider keys with the GPUStack endpoint/model).
+  // There is no installer OAuth; a non-interactive run without a held gateway
+  // key aborts with the env-var remediation. `--provider host` stays an
+  // explicit loopback-shim opt-in.
   if (!setup && !resolvedProvider && process.stdin.isTTY !== true) {
     const implicit = resolveInstallerProviderChoice({ ide });
     if (implicit) {
@@ -159,7 +160,7 @@ function parseInstallOptions(argv: string[]): InstallOptions {
   return {
     ide,
     provider: resolvedProvider,
-    // Both the explicit flag and the grok-bot implicit cmem default are
+    // Both the explicit flag and the grok-bot implicit gateway default are
     // explicit product choices; install.ts only defaults when this is unset.
     providerSource: resolvedProvider ? 'flag' : undefined,
     model: flag('model'),

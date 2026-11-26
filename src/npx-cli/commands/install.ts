@@ -40,38 +40,16 @@ import {
   type InstallSummary,
 } from '../install/error-reporter.js';
 import { extractEresolveBlock, isEresolve, npmErrorCode, runNpmStrict } from '../install/npm-install-helper.js';
-import {
-  buildProviderLabels,
-  PROVIDER_PROMPT_MESSAGE,
-} from '../cmem-pro-costs.js';
-import { openBrowser, waitForReturnToOpenBrowser } from '../install/open-browser.js';
+import { openBrowser } from '../install/open-browser.js';
 import { isInteractive, log } from '../install/cli-io.js';
 import { mergeSettings } from '../install/settings-io.js';
-import {
-  completeInstallerOAuthLogin,
-  lastOAuthStartErrorMessage,
-  lastOAuthStartFailure,
-  noteDeviceCode,
-  pairingAcceptsReady,
-  saveReadyPairing,
-  setInstallerSignupContext,
-  startInstallerOAuthPairing,
-  waitForInstallerPairing,
-  type InstallerOAuthPairing,
-  type TrialReadyResult,
-} from '../install/pairing.js';
-import { clearProFallback, isCmemGatewayUrl } from '../../shared/cmem-gateway.js';
-import { PRO_TRIAL_LABEL, proTrialUrl } from '../../shared/pro-promo.js';
+import { setInstallerSignupContext } from '../install/pairing.js';
+import { isCmemGatewayUrl } from '../../shared/cmem-gateway.js';
 import {
   buildAnthropicMaxLocalSettings,
-  buildCmemActivationSettings,
   buildHostObserverSettings,
-  buildNonInteractiveOpenRouterSettings,
-  buildPersonalOpenRouterSettings,
-  resolveCmemMemoryCredentials,
 } from '../cmem-memory-credentials.js';
-import { endSetupSession, hasProConfiguration, INITIAL_SETUP_STATE, readSetupState, readSetupTelemetryContext, startSetupSession, writeSetupState } from '../../shared/setup-state.js';
-import { PRIVATE_WORK_VIEW_URL, setupCloudSyncOffer, type SetupCloudSyncOffer } from '../../shared/setup-funnel.js';
+import { endSetupSession, hasProConfiguration, INITIAL_SETUP_STATE, readSetupState, startSetupSession, writeSetupState } from '../../shared/setup-state.js';
 import { AGENT_BROWSER_SETUP_HINT, runBrowserSetup, settingsChangesNeedingRestart, shouldPrintAgentBrowserSetupHint, shouldUseBrowserSetup, waitForBackgroundWorkToFinish, type BrowserSetupOutcome } from '../install/browser-setup.js';
 
 function getSetting<K extends keyof SettingsDefaults>(key: K): SettingsDefaults[K] {
@@ -871,7 +849,7 @@ export function browserInstallCatalog(options: InstallOptions, reinstall: boolea
     },
     telemetryLocked: !!process.env.CI || consent.source === 'DO_NOT_TRACK' || consent.source === 'env',
     skillsLocked: process.env.CLAUDE_MEM_SKILLS_DISABLED !== undefined,
-    // Older setup pages also honor this flag. The terminal owns the signup.
+    // The terminal never collects an email; the flag stays for older setup pages.
     emailEnabled: false,
   };
 }
@@ -879,20 +857,6 @@ export function browserInstallCatalog(options: InstallOptions, reinstall: boolea
 /** The browser's model counts only when the person changed it; an untouched default keeps the saved setting. */
 function browserModelChoice(selection: SetupInstallSelection, catalog: SetupInstallCatalog, current: string | undefined): string | undefined {
   return selection.claudeModel && selection.claudeModel !== catalog.defaults.claudeModel ? selection.claudeModel : current;
-}
-
-/** Finish an opt-in already entered into a pending setup from an older installer. */
-async function applyLegacyBrowserEmail(selection: SetupInstallSelection, version: string): Promise<void> {
-  const email = selection.email?.trim();
-  if (!email) return;
-  const note = selection.note?.trim() ?? '';
-  const prior = readStoredSignup();
-  if (prior?.email === email && prior.note === note && prior.sent) return;
-  const sent = await submitEmailSignup({ email, note, version });
-  if (!mergeSettings({ CLAUDE_MEM_ONLINE_SIGNUP_EMAIL: email, CLAUDE_MEM_ONLINE_SIGNUP_NOTE: note,
-    CLAUDE_MEM_ONLINE_SIGNUP_AT: new Date().toISOString(), CLAUDE_MEM_ONLINE_SIGNUP_SENT: String(sent) })) {
-    throw new Error('Could not save your email preference.');
-  }
 }
 
 export function copyPluginToMarketplace(): void {
@@ -1118,14 +1082,6 @@ async function runNpmInstallInMarketplace(summary: InstallSummary): Promise<void
 }
 
 type ProviderId = 'claude' | 'codex' | 'gemini' | 'openrouter' | 'openai-compatible' | 'host';
-/**
- * What the installer prompt may offer. `cmem` is a prompt-only sentinel: picking
- * it configures the generic OpenAI-compatible path (base URL + model + key) and
- * persists CLAUDE_MEM_PROVIDER='openrouter'. The worker only understands 'claude' |
- * 'codex' | 'gemini' | 'openrouter' | 'openai-compatible', so 'cmem' must never
- * reach settings.json.
- */
-type ProviderChoice = ProviderId | 'cmem';
 // Phase 1d: Persisted DB literals (`server_beta_schema_migrations`, job_type
 // enums, `server-beta-worker` lockedBy marker) are intentionally preserved in
 // the source code; runtime-selector dual-accepts both `'server'` and
@@ -1309,19 +1265,7 @@ async function bootstrapAndPersistServerApiKey(): Promise<void> {
 }
 
 /** Exported for tests: the provider step of `install` and `update`. */
-export async function promptProvider(
-  options: InstallOptions,
-  /**
-   * Null when login was skipped for an explicit local provider, or when an
-   * interactive run left sign-in to this prompt (see `signIn`). The CMEM
-   * branch below re-checks rather than assuming.
-   */
-  pairing: InstallerOAuthPairing | null,
-  version: string,
-  /** Runs the claude-mem sign-in when CMEM Pro is picked and no pairing exists yet. */
-  signIn?: () => Promise<InstallerOAuthPairing | null>,
-): Promise<ProviderId> {
-  const initialProvider = (getSetting('CLAUDE_MEM_PROVIDER') as ProviderId) || 'claude';
+export async function promptProvider(options: InstallOptions): Promise<ProviderId> {
   const persistedSettings = readPersistedInstallerSettings();
 
   const useSubscriptionAuth = () => {
@@ -1347,96 +1291,19 @@ export async function promptProvider(
     return options.provider;
   }
 
-  let selectedProvider: ProviderChoice;
+  let selectedProvider: ProviderId;
   if (options.provider) {
     selectedProvider = options.provider;
   } else {
     if (!isInteractive) {
       throw new Error('Non-interactive provider validation did not run.');
     }
-    options.providerSource = 'prompt';
-    const labels = buildProviderLabels();
-
-    // Multiselect gives both choices square controls. Exactly one provider is
-    // still required; selecting both re-opens the prompt instead of guessing.
-    while (true) {
-      const providerResult = await p.multiselect<ProviderChoice>({
-        message: PROVIDER_PROMPT_MESSAGE,
-        options: [
-          { value: 'cmem', label: labels.cmem, hint: labels.cmemHint },
-          { value: 'claude', label: labels.claude, hint: labels.claudeHint },
-        ],
-        // CMEM Pro pre-selected: it is the recommended path and the one the
-        // funnel is built around. Selecting it no longer means "pay now" —
-        // it opens the offer page to read first.
-        initialValues: ['cmem'],
-        required: true,
-      });
-      // @clack/prompts 1.8: isCancel narrows to unique CANCEL_SYMBOL, not generic symbol.
-      if (p.isCancel(providerResult) || !Array.isArray(providerResult)) {
-        p.cancel('Installation cancelled.');
-        process.exit(1);
-      }
-      if (providerResult.length === 1) {
-        selectedProvider = providerResult[0];
-        break;
-      }
-      log.warn('Select exactly one provider.');
-    }
-  }
-
-  // CMEM Pro: no new provider code. The worker's OpenRouter client is a generic
-  // OpenAI-compatible client whose endpoint and model both come from settings,
-  // so "use the CMEM observer model" is four settings writes and nothing else.
-  if (selectedProvider === 'cmem') {
-    if (!pairing && signIn) {
-      pairing = await signIn();
-      if (!pairing) {
-        p.cancel('CMEM Pro needs a claude-mem sign-in. Run npx claude-mem install again to retry, or pick your Anthropic plan.');
-        process.exit(1);
-      }
-    }
-    if (!pairing) {
-      // Unreachable via the flag that skips login (it forces 'claude'), but a
-      // future caller passing null here would otherwise enroll against nothing.
-      throw new Error('CMEM Pro requires a signed-in claude-mem account.');
-    }
-    // The billing disclosure lives on the checkout page, not here. It is a term
-    // of the charge, so it belongs on the screen that takes the payment method,
-    // where it can be shown next to the price and the card field. Re-asking for
-    // it in the terminal made the user consent twice to the same thing, before
-    // ever seeing what they were agreeing to.
-    const enrollment = await completeCmemTrialPairing(pairing, version);
-    if (!enrollment) {
-      p.cancel('CMEM Pro setup was not completed. Run npx claude-mem install to try again.');
-      process.exit(1);
-    }
-    // A sync-only account (Cloud Sync or a TeamBrain seat) gets no CMEM Pro
-    // observer. Its sync connection is already saved; the observer and the
-    // provider settings stay exactly as they are, and no staged or earlier
-    // gateway key is promoted in their place.
-    if (!enrollment.memory) {
-      if (enrollment.plan === 'cloud_sync') {
-        log.info(`Cloud Sync is connected. Memory keeps its current provider (${initialProvider}). Hosted tokens are available separately at https://cmem.ai/hosted-tokens.`);
-      } else {
-        log.warn(`This account syncs through a TeamBrain seat, which does not include CMEM Pro's observer. Memory keeps its current provider (${initialProvider}). CMEM Pro: ${proTrialUrl('installer')}`);
-      }
-      return initialProvider;
-    }
-    const cmemCredentials = resolveCmemMemoryCredentials(enrollment.memory, persistedSettings);
-    if (!cmemCredentials) {
-      p.cancel('CMEM Pro did not return memory credentials. Run npx claude-mem install to try again.');
-      process.exit(1);
-    }
-
-    const wrote = mergeSettings(buildCmemActivationSettings(cmemCredentials));
-    if (!wrote) {
-      p.cancel('Could not save the CMEM Pro configuration.');
-      process.exit(1);
-    }
-    if (cmemCredentials.clearFallback) clearProFallback();
-    log.info('CMEM Pro configured with your signed-in memory key.');
-    return 'openrouter';
+    // No prompt: the only choice is the internal model gateway. A fresh
+    // install fills the empty provider keys with the GPUStack defaults below.
+    options.providerSource = 'default';
+    options.provider = 'openrouter';
+    selectedProvider = 'openrouter';
+    log.info('Memory runs on the internal model gateway (GPUStack).');
   }
 
   if (selectedProvider === 'claude') {
@@ -1479,29 +1346,63 @@ export async function promptProvider(
     throw new Error('The openai-compatible provider is configured in ~/.claude-mem/settings.json, not by the installer.');
   }
 
-  const providerLabel = selectedProvider === 'gemini' ? 'Gemini' : 'OpenRouter';
-  const keyEnvName = selectedProvider === 'gemini'
-    ? 'CLAUDE_MEM_GEMINI_API_KEY'
-    : 'CLAUDE_MEM_OPENROUTER_API_KEY';
+  if (selectedProvider === 'openrouter') {
+    const persistedNow = readPersistedInstallerSettings();
+    if (hasPersonalProviderKey('openrouter', persistedNow)) {
+      // A held key wins. Fill only the empty provider keys with the internal
+      // gateway's endpoint and model (applyGpustackDefaults never overwrites
+      // a held value and never writes the key itself).
+      applyGpustackDefaults(persistedNow);
+      return 'openrouter';
+    }
+    // A saved configuration pointing at the cmem gateway with no key is kept
+    // as it is: a GPUStack key pasted here would be sent to the saved gateway
+    // URL, and this local-only build has no account flow to refill the key.
+    if (isCmemGatewayUrl(String(persistedNow.CLAUDE_MEM_OPENROUTER_BASE_URL ?? ''))) {
+      log.info('Keeping the existing configuration.');
+      return 'openrouter';
+    }
+    // No key held in settings, the environment or ~/.claude-mem/.env. A
+    // non-TTY run was already aborted by validateNonInteractiveProvider with
+    // the remediation before this step could run.
+    if (!isInteractive) {
+      throw new Error('Non-interactive provider validation did not run.');
+    }
+    const apiKeyResult = await p.password({
+      message: 'Paste your GPUStack API key:',
+      mask: '*',
+      validate: (value?: string) => value?.trim() ? undefined : 'API key required',
+    });
+    if (p.isCancel(apiKeyResult) || !String(apiKeyResult).trim()) {
+      // Nothing has been written yet: the defaults below are applied only once
+      // a key is secured, so a cancelled prompt leaves settings as they were.
+      throw new Error('Setup cancelled: no GPUStack API key was entered. Run npx claude-mem install again to retry, or pass --provider claude to use your Anthropic plan.');
+    }
+    // Key secured: fill the empty provider keys with the gateway defaults and
+    // save the key.
+    applyGpustackDefaults(persistedNow);
+    if (!mergeSettings({ CLAUDE_MEM_OPENROUTER_API_KEY: String(apiKeyResult).trim() })) {
+      throw new Error('Could not save the GPUStack API key.');
+    }
+    log.info('Saved CLAUDE_MEM_OPENROUTER_API_KEY to ~/.claude-mem/settings.json.');
+    return 'openrouter';
+  }
 
+  // Gemini: bring-your-own key, asked locally.
+  const keyEnvName = 'CLAUDE_MEM_GEMINI_API_KEY';
   const existingKey = getSetting(keyEnvName as keyof SettingsDefaults) as string | undefined;
-  const existingOpenRouterBaseUrl = selectedProvider === 'openrouter'
-    ? String(getSetting('CLAUDE_MEM_OPENROUTER_BASE_URL') ?? '')
-    : '';
-  const existingKeyIsCmem = selectedProvider === 'openrouter'
-    && isCmemGatewayUrl(existingOpenRouterBaseUrl);
-  if (existingKey && existingKey.trim().length > 0 && !existingKeyIsCmem) {
-    const wrote = mergeSettings({ CLAUDE_MEM_PROVIDER: selectedProvider });
-    if (wrote) log.info(`Saved provider=${selectedProvider} to ~/.claude-mem/settings.json`);
-    return selectedProvider;
+  if (existingKey && existingKey.trim().length > 0) {
+    const wrote = mergeSettings({ CLAUDE_MEM_PROVIDER: 'gemini' });
+    if (wrote) log.info('Saved provider=gemini to ~/.claude-mem/settings.json');
+    return 'gemini';
   }
 
   if (!isInteractive) {
-    throw new Error(`Non-interactive ${providerLabel} configuration is missing a personal API key.`);
+    throw new Error('Non-interactive Gemini configuration is missing a personal API key.');
   }
 
   const apiKeyResult = await p.password({
-    message: `Paste your ${providerLabel} API key:`,
+    message: 'Paste your Gemini API key:',
     mask: '*',
     validate: (v?: string) => (!v || v.trim().length === 0) ? 'API key required' : undefined,
   });
@@ -1510,29 +1411,19 @@ export async function promptProvider(
   // Anthropic plan. Nothing is written and nothing is substituted (#5675).
   if (p.isCancel(apiKeyResult)) {
     p.cancel(
-      `${providerLabel} setup cancelled: no API key was entered and your provider setting was not changed. `
-      + `Run \`npx claude-mem install --provider ${selectedProvider}\` to try again, `
+      'Gemini setup cancelled: no API key was entered and your provider setting was not changed. '
+      + 'Run `npx claude-mem install --provider gemini` to try again, '
       + 'or `--provider claude` to use your Anthropic plan.',
     );
     process.exit(1);
   }
 
   const apiKey = String(apiKeyResult).trim();
-  const updates = selectedProvider === 'openrouter'
-    ? buildPersonalOpenRouterSettings(
-      apiKey,
-      readPersistedInstallerSettings(),
-      SettingsDefaultsManager.getAllDefaults().CLAUDE_MEM_OPENROUTER_MODEL,
-    )
-    : {
-      CLAUDE_MEM_PROVIDER: selectedProvider,
-      [keyEnvName]: apiKey,
-    };
-  const wrote = mergeSettings(updates);
+  const wrote = mergeSettings({ CLAUDE_MEM_PROVIDER: 'gemini', [keyEnvName]: apiKey });
   if (wrote) {
-    log.info(`Saved provider=${selectedProvider} to ~/.claude-mem/settings.json`);
+    log.info('Saved provider=gemini to ~/.claude-mem/settings.json');
   }
-  return selectedProvider;
+  return 'gemini';
 }
 
 /**
@@ -1627,295 +1518,6 @@ async function promptClaudeModel(options: InstallOptions, interactive: boolean =
   }
 }
 
-// The optional end-of-install sign-in offer must not hold a finished install
-// hostage to a stalled cmem.ai: give up well before the blocking login would.
-const OAUTH_DEFERRED_START_TIMEOUT_MS = 3_000;
-
-async function requireInstallerOAuthLogin(version: string): Promise<InstallerOAuthPairing | null> {
-  const spinner = isInteractive ? p.spinner() : null;
-  spinner?.start('Starting secure OAuth login…');
-  const pairing = await startInstallerOAuthPairing();
-  if (!pairing) {
-    await captureCliEvent('installer_oauth_start_failed', {
-      version,
-      outcome: lastOAuthStartFailure() ?? 'network',
-      interactive: isInteractive,
-      phase: 'login',
-    });
-    spinner?.stop(styleText('red', 'Could not start OAuth login.'));
-    log.error(lastOAuthStartErrorMessage()
-      ? `OAuth login is required. Could not start it: ${lastOAuthStartErrorMessage()}`
-      : 'OAuth login is required. Run npx claude-mem install again when cmem.ai is reachable.');
-    return null;
-  }
-  spinner?.stop('OAuth login ready.');
-
-  // No provider, plan, or pricing language on this step: the checkout page
-  // carries the plan and price, so anything about a paid plan here would be an
-  // upsell bolted onto the sign-in.
-  log.info(`Open this URL: ${pairing.authorizationUrl}`);
-  await waitForReturnToOpenBrowser('Continue setup in browser... (hit return to open automatically)');
-  openBrowser(pairing.authorizationUrl);
-  await captureCliEvent('installer_oauth_started', { version });
-
-  const completed = await completeInstallerOAuthLogin(pairing, version);
-  return completed ? pairing : null;
-}
-
-/**
- * Best-effort, non-blocking sign-in offer for non-interactive installs that
- * skipped login (provider needs no account). Agents run `npx claude-mem install`
- * in non-TTY shells; the blocking OAuth step cannot run there, so the install
- * completes and the agent can relay the optional login-only link.
- *
- * Never polls, never opens a browser, never prints the device code or the
- * checkout URL, and never touches exit status. Skipped under CI. Not gated on
- * the do-not-track env var: only telemetry is, and captureCliEvent already honors it.
- * The server ignores `source` today and will allowlist it separately.
- */
-export async function offerDeferredLogin(options: InstallOptions, version: string): Promise<void> {
-  if (options.update) return;
-  if (isInteractive) return;
-  if (providerNeedsAccount(options.provider)) return;
-  if (process.env.CI) return;
-  // Nobody reads an auto-update run's output, and each offer starts a cmem.ai
-  // pairing (shared/auto-update-install-run.ts).
-  if (isInstallRunByAutoUpdate()) return;
-
-  const pairing = await startInstallerOAuthPairing({
-    source: 'npx-installer-deferred',
-    timeoutMs: OAUTH_DEFERRED_START_TIMEOUT_MS,
-  });
-  if (!pairing) {
-    await captureCliEvent('installer_oauth_start_failed', {
-      version,
-      outcome: lastOAuthStartFailure() ?? 'network',
-      interactive: false,
-      phase: 'deferred',
-    });
-    log.error(lastOAuthStartErrorMessage()
-      ? `Could not start the optional claude-mem sign-in: ${lastOAuthStartErrorMessage()}`
-      : 'Could not start the optional claude-mem sign-in. Run npx claude-mem install again when cmem.ai is reachable.');
-    return;
-  }
-
-  // Telemetry first so that, in CLAUDE_MEM_TELEMETRY_DEBUG=1 mode, its stderr
-  // line cannot interrupt the link and its accompanying instruction.
-  await captureCliEvent('installer_oauth_deferred', { version, interactive: false });
-  log.info('Optional: sign in to claude-mem to unlock cloud sync and the CMEM Pro trial.');
-  log.info(`Sign-in link: ${pairing.authorizationUrl}`);
-  log.info('AGENT: show this link to the user so they can finish signing in. This optional link is for account sign-in only.');
-}
-
-/**
- * Continues the already-authenticated pairing only after the CMEM Pro choice
- * and required trial acknowledgement.
- */
-/** Activate a fresh enrollment before the browser reports checkout paid. Sync-only seats keep their provider. */
-export function activateBrowserEnrollment(result: TrialReadyResult): ProviderId | null {
-  if (!result.memory) return null;
-  const credentials = resolveCmemMemoryCredentials(result.memory, SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH));
-  if (!credentials || !mergeSettings(buildCmemActivationSettings(credentials))) throw new Error('Could not save the CMEM Pro memory configuration.');
-  if (credentials.clearFallback) clearProFallback();
-  return 'openrouter';
-}
-
-export async function completeCmemTrialPairing(
-  pairing: InstallerOAuthPairing,
-  version: string,
-): Promise<TrialReadyResult | null> {
-  if (pairing.delivered) return pairingAcceptsReady(pairing, pairing.delivered) ? pairing.delivered : null;
-
-  noteDeviceCode(pairing);
-  // Deliberately NO return-wait here, unlike the login hand-off.
-  //
-  // A second wait at this point stalled the install: stdin has already been
-  // through the login wait and a clack prompt by now, and the listener did not
-  // reliably receive the keypress, so the flow stopped before it could even
-  // print "Waiting for CMEM Pro setup in the browser…". Opening directly is
-  // also the better behaviour here — the user has already chosen CMEM Pro, so
-  // there is nothing left to confirm before the browser takes over.
-  log.info(`Continue ${pairing.cloudSyncOffer ? 'Cloud Sync' : 'CMEM Pro'} setup: ${pairing.checkoutUrl}`);
-  openBrowser(pairing.checkoutUrl);
-
-  const result = await waitForInstallerPairing(pairing, 'enrollment', version);
-  if (!result || result.kind !== 'ready') return null;
-  if (!pairingAcceptsReady(pairing, result)) return null;
-
-  const wrote = saveReadyPairing(pairing, result);
-  if (!wrote) {
-    log.error(`Could not save the one-time ${pairing.cloudSyncOffer ? 'Cloud Sync' : 'CMEM Pro'} credentials.`);
-    return null;
-  }
-  pairing.delivered = result;
-  // A sync-only account (Cloud Sync or a TeamBrain seat) has no CMEM Pro to announce, and
-  // no gateway key whose fallback a fresh delivery would clear.
-  if (result.memory) {
-    clearProFallback();
-    log.success(`CMEM Pro ${PRO_TRIAL_LABEL} active.`);
-    await captureCliEvent('trial_activated', { version });
-  } else if (result.plan === 'cloud_sync') {
-    log.success('Cloud Sync connected. Memory keeps your existing provider.');
-    log.info(`Open your private Work View: ${PRIVATE_WORK_VIEW_URL}`);
-  }
-  return result;
-}
-
-// --- Email opt-in ------------------------------------------------------------
-// Interactive, optional, asked once. The CLI POSTs the email + optional note to
-// the waitlist endpoint (cmem.ai/api/waitlist), which handles persistence, dedup,
-// and the confirmation email server-side. CLAUDE_MEM_SIGNUP_URL overrides the
-// default for testing/staging. No API keys ever ship in the npx package — the
-// endpoint is unauthenticated and the secret (Resend) stays server-side.
-// Anything that goes wrong here is swallowed — a marketing opt-in must never
-// block or fail the install.
-
-const DEFAULT_SIGNUP_ENDPOINT = 'https://cmem.ai/api/waitlist';
-const SIGNUP_ENDPOINT = process.env.CLAUDE_MEM_SIGNUP_URL?.trim() || DEFAULT_SIGNUP_ENDPOINT;
-const SIGNUP_EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-
-interface StoredSignup {
-  email: string;
-  note: string;
-  sent: boolean;
-}
-
-function parseStoredSignup(): StoredSignup | null {
-  const flat = readFlatSettings(USER_SETTINGS_PATH);
-  if (!flat) return null;
-  const email = typeof flat.CLAUDE_MEM_ONLINE_SIGNUP_EMAIL === 'string' ? flat.CLAUDE_MEM_ONLINE_SIGNUP_EMAIL : '';
-  if (!email) return null;
-  return {
-    email,
-    note: typeof flat.CLAUDE_MEM_ONLINE_SIGNUP_NOTE === 'string' ? flat.CLAUDE_MEM_ONLINE_SIGNUP_NOTE : '',
-    sent: flat.CLAUDE_MEM_ONLINE_SIGNUP_SENT === 'true',
-  };
-}
-
-/**
- * settings.json is there but is not a settings document. The email save would
- * move it aside before the overwrite question, so the opt-in leaves it alone.
- */
-function settingsFileUnreadable(): boolean {
-  if (!existsSync(USER_SETTINGS_PATH)) return false;
-  try {
-    return readFlatSettings(USER_SETTINGS_PATH) === null;
-  } catch {
-    // [ANTI-PATTERN IGNORED]: a parse failure is exactly the unreadable case this reports; the install's own settings writes handle the file later.
-    return true;
-  }
-}
-
-function readStoredSignup(): StoredSignup | null {
-  try {
-    return parseStoredSignup();
-  } catch {
-    // [ANTI-PATTERN IGNORED]: settings.json is optional and may be missing or hand-edited into invalid JSON; treating that as "no stored signup" simply re-asks the opt-in, the designed recovery for this never-blocking marketing flow.
-    return null;
-  }
-}
-
-async function postSignup(payload: { email: string; note: string; version: string }, signal: AbortSignal): Promise<boolean> {
-  const res = await fetch(SIGNUP_ENDPOINT, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      email: payload.email,
-      note: payload.note,
-      version: payload.version,
-      platform: process.platform,
-      source: 'npx-installer',
-    }),
-    signal,
-  });
-  return res.ok;
-}
-
-async function submitEmailSignup(payload: { email: string; note: string; version: string }): Promise<boolean> {
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), 5000);
-  try {
-    return await postSignup(payload, controller.signal);
-  } catch {
-    // [ANTI-PATTERN IGNORED]: network/timeout failures of this optional waitlist POST are expected offline; the caller persists the email locally and retries silently on the next install run.
-    return false;
-  } finally {
-    clearTimeout(timer);
-  }
-}
-
-/**
- * Optional email + "how can we help" note, asked once near the start of an
- * interactive install. Never asked in non-TTY (agent-run) or CI installs, and
- * CLAUDE_MEM_ONLINE_OPTIN=false turns it off for scripted ones. Enter skips it.
- * Exported for the opt-in fixture test.
- */
-export async function promptEmailOptIn(version: string): Promise<void> {
-  if (!isInteractive) return;
-  if (process.env.CI) return;
-  if (String(process.env.CLAUDE_MEM_ONLINE_OPTIN ?? '').trim().toLowerCase() === 'false') return;
-  if (settingsFileUnreadable()) return;
-
-  const prior = readStoredSignup();
-  if (prior) {
-    // We already captured this email — don't re-nag. If a previous send never
-    // reached the service, quietly retry once now and record the result.
-    if (!prior.sent) {
-      const ok = await submitEmailSignup({ email: prior.email, note: prior.note, version });
-      if (ok) mergeSettings({ CLAUDE_MEM_ONLINE_SIGNUP_SENT: 'true' });
-    }
-    return;
-  }
-
-  p.note(
-    [
-      "Share your email and we'll keep you posted on what's new in claude-mem.",
-      'Optional: press Enter to skip.',
-    ].join('\n'),
-    'Stay in touch',
-  );
-
-  const emailResult = await p.text({
-    message: 'Your work email (press Enter to skip):',
-    placeholder: 'you@company.com',
-    defaultValue: '',
-    validate: (v?: string) => {
-      const value = (v ?? '').trim();
-      if (value.length === 0) return undefined; // empty = skip, not an error
-      if (!SIGNUP_EMAIL_RE.test(value)) return "That doesn't look like an email — fix it, or clear the field to skip.";
-      return undefined;
-    },
-  });
-
-  if (p.isCancel(emailResult)) return;
-  const email = String(emailResult).trim();
-  if (email.length === 0) return;
-
-  const noteResult = await p.text({
-    message: 'Optionally: what are you working on, or how can we help you and your team? (Enter to skip)',
-    placeholder: 'e.g. migrating a monorepo, onboarding a 5-dev team…',
-    defaultValue: '',
-  });
-  const note = p.isCancel(noteResult) ? '' : String(noteResult).trim();
-
-  const spin = p.spinner();
-  spin.start('Sending…');
-  const ok = await submitEmailSignup({ email, note, version });
-  // Persist locally regardless of the network result so we never re-prompt;
-  // a failed send is retried silently on the next install (see above).
-  mergeSettings({
-    CLAUDE_MEM_ONLINE_SIGNUP_EMAIL: email,
-    CLAUDE_MEM_ONLINE_SIGNUP_NOTE: note,
-    CLAUDE_MEM_ONLINE_SIGNUP_AT: new Date().toISOString(),
-    CLAUDE_MEM_ONLINE_SIGNUP_SENT: ok ? 'true' : 'false',
-  });
-  if (ok) {
-    spin.stop(`Thanks — we'll be in touch at ${styleText('cyan', email)}.`);
-  } else {
-    spin.stop(styleText('yellow', `Saved ${email} — we'll finish sending it next time you run the installer.`));
-  }
-}
-
 /**
  * Final step of the install flow: tell the user telemetry is on by default
  * (opt-out) and let them decide. Asked ONCE — a telemetry.json with a recorded
@@ -1947,18 +1549,35 @@ async function promptTelemetryOptIn(): Promise<void> {
 }
 
 /**
- * Whether an install still has an account question to answer.
- *
- * `--provider claude` and `--provider host` are exempt: they use the user's
- * existing local credentials and need no claude-mem account. `gemini`,
- * `openrouter` and `codex` are NOT exempt — openrouter is the transport for
- * the cmem gateway, so an explicit `openrouter` install may still be reaching
- * cmem.ai, and gemini and codex are bring-your-own providers that sign in
- * like any other. With no flag at all the provider screen can still offer
- * CMEM Pro, so login must happen first.
+ * GPUStack fresh-install defaults: the internal model gateway a fresh install
+ * runs memory on. Written only into keys that would otherwise stay empty —
+ * the environment, ~/.claude-mem/.env and existing non-empty settings always
+ * win — and the gateway key is never one of them: it is never hardcoded, only
+ * asked for or read (CLAUDE_MEM_OPENROUTER_API_KEY).
  */
-export function providerNeedsAccount(provider: InstallOptions['provider']): boolean {
-  return provider !== 'claude' && provider !== 'host';
+const GPUSTACK_DEFAULT_BASE_URL = 'https://gpustack.data.lmru.tech/v1';
+const GPUSTACK_DEFAULT_MODEL = 'glm-5.3-flash';
+
+/**
+ * Fill only the empty provider keys with the GPUStack defaults. mergeSettings
+ * replaces values, so each key's current holder is checked first (settings,
+ * process.env and ~/.claude-mem/.env — the same lookup hasPersonalProviderKey
+ * uses) and it is included only when nothing anywhere would be overwritten.
+ */
+function applyGpustackDefaults(persisted: Record<string, unknown>): void {
+  // A machine with a persisted provider keeps every provider key as it is,
+  // empty included: the defaults are for a genuinely fresh install only.
+  if (holdsKey(persisted.CLAUDE_MEM_PROVIDER)) return;
+  const credentials = loadClaudeMemEnv() as Record<string, string | undefined>;
+  const held = (name: string): boolean =>
+    holdsKey(persisted[name]) || holdsKey(process.env[name]) || holdsKey(credentials[name]);
+  const updates: Record<string, string> = {};
+  if (!held('CLAUDE_MEM_PROVIDER')) updates.CLAUDE_MEM_PROVIDER = 'openrouter';
+  if (!held('CLAUDE_MEM_OPENROUTER_BASE_URL')) updates.CLAUDE_MEM_OPENROUTER_BASE_URL = GPUSTACK_DEFAULT_BASE_URL;
+  if (!held('CLAUDE_MEM_OPENROUTER_MODEL')) updates.CLAUDE_MEM_OPENROUTER_MODEL = GPUSTACK_DEFAULT_MODEL;
+  if (Object.keys(updates).length === 0) return;
+  if (!mergeSettings(updates)) return;
+  log.info(`Configured the internal model gateway (GPUStack): ${Object.keys(updates).sort().join(', ')}.`);
 }
 
 export interface InstallOptions {
@@ -2225,20 +1844,23 @@ function missingProviderKey(provider: ProviderId, persisted: Record<string, unkn
 }
 
 /** An update repairs only the missing credential; it never switches a saved provider on cancellation. */
-async function completeUpdateProviderSetup(options: InstallOptions, version: string): Promise<InstallerOAuthPairing | null> {
-  if (!options.update || options.providerSource !== 'persisted' || !options.provider) return null;
+async function completeUpdateProviderSetup(options: InstallOptions, summary: InstallSummary): Promise<void> {
+  if (!options.update || options.providerSource !== 'persisted' || !options.provider) return;
   const missing = missingProviderKey(options.provider, readPersistedInstallerSettings());
-  if (!missing) return null;
+  if (!missing) return;
+  // A saved openrouter config pointing at the cmem gateway with no key cannot
+  // be repaired here: this local-only build has no account flow, so say how
+  // the key is restored instead of starting an OAuth login.
+  if (missing.cmemGateway) {
+    installerError(ErrorSeverity.ABORT, {
+      component: 'provider-credentials',
+      phase: 'provider-cutover',
+      cause: new Error('The saved openrouter gateway key is missing.'),
+      remediation: 'The saved openrouter gateway key is missing. Save CLAUDE_MEM_OPENROUTER_API_KEY in ~/.claude-mem/settings.json or pass --provider claude to switch to your Anthropic plan.',
+    }, summary);
+  }
   if (!isInteractive) throw new Error('Provider credentials are missing. Run npx claude-mem update in an interactive terminal to finish setup.');
   log.info(`The configured ${options.provider} provider needs its missing API key to finish setup.`);
-  if (missing.cmemGateway) {
-    const pairing = await requireInstallerOAuthLogin(version);
-    const enrollment = pairing && await completeCmemTrialPairing(pairing, version);
-    if (!enrollment || !enrollment.memory || !activateBrowserEnrollment(enrollment)) {
-      throw new Error('CMEM Pro credentials are still missing. Run npx claude-mem install to finish account setup.');
-    }
-    return pairing;
-  }
   const apiKey = await p.password({
     message: `Paste your ${options.provider === 'gemini' ? 'Gemini' : 'OpenRouter'} API key:`,
     mask: '*',
@@ -2251,7 +1873,6 @@ async function completeUpdateProviderSetup(options: InstallOptions, version: str
   if (!mergeSettings({ [missing.keyName]: String(apiKey).trim() })) {
     throw new Error('Could not save the missing provider API key.');
   }
-  return null;
 }
 
 /** Exported for the non-interactive contract tests; not part of the CLI surface. */
@@ -2314,7 +1935,9 @@ export function validateNonInteractiveProvider(
       component: 'provider-credentials',
       phase: 'non-interactive-validation',
       cause: new Error(`${options.provider} requires a preconfigured personal API key when stdin is not interactive.`),
-      remediation: `Save ${keyName} first, or run the installer in an interactive terminal so it can ask securely.`,
+      remediation: options.provider === 'openrouter'
+        ? 'Set CLAUDE_MEM_OPENROUTER_API_KEY (env or ~/.claude-mem/.env) or pass --provider claude.'
+        : `Save ${keyName} first, or run the installer in an interactive terminal so it can ask securely.`,
     }, summary);
   }
 }
@@ -2441,33 +2064,6 @@ const FINISH_SETUP_LOCAL_TOOL_IDES: Record<string, string> = { 'claude-code': 'c
 
 function readSettingsSnapshot(): string {
   return existsSync(USER_SETTINGS_PATH) ? readFileSync(USER_SETTINGS_PATH, 'utf8') : '';
-}
-
-/**
- * On The Go in the browser funnel: starts the sign-in pairing, carrying any
- * earlier hosted-intent installation identity. The checkout that completes it is the
- * funnel's next step (completeCmemTrialPairing, funnel Phase 8).
- */
-async function startOnTheGoPairing(version: string, cloudSyncOffer?: SetupCloudSyncOffer, shareWorkView?: true): Promise<InstallerOAuthPairing> {
-  const spinner = isInteractive ? p.spinner() : null;
-  const product = cloudSyncOffer ? 'Cloud Sync' : 'CMEM Pro';
-  spinner?.start(`Starting ${product} sign-in…`);
-  const pairing = await startInstallerOAuthPairing({ setupFlowId: readSetupTelemetryContext()?.setup_flow_id, cloudSyncOffer });
-  if (!pairing) {
-    await captureCliEvent('installer_oauth_start_failed', {
-      version,
-      outcome: lastOAuthStartFailure() ?? 'network',
-      interactive: isInteractive,
-      phase: 'enrollment',
-    });
-    spinner?.stop(styleText('red', `Could not start the ${product} sign-in.`));
-    throw new Error(lastOAuthStartErrorMessage()
-      ? `Could not start the ${product} sign-in: ${lastOAuthStartErrorMessage()}`
-      : `Could not start the ${product} sign-in. Run npx claude-mem install again when cmem.ai is reachable.`);
-  }
-  pairing.shareWorkView = shareWorkView;
-  spinner?.stop(`${product} sign-in ready. Continue setup in the browser.`);
-  return pairing;
 }
 
 /**
@@ -2619,7 +2215,6 @@ async function runInstallCommandInner(options: InstallOptions, summary: InstallS
   });
   const resumedState = resumeSetup ? readSetupState() : null;
   if (resumeSetup && !resumedState?.install) throw new Error('There is no deferred setup to resume.');
-  if (!options.update && !deferSetup && !resumeSetup) await promptEmailOptIn(version);
   const installCatalog = resumedState?.install?.catalog ?? (browserSetup ? browserInstallCatalog(options, alreadyInstalled) : null);
 
   if (alreadyInstalled && !browserSetup && !options.update) {
@@ -2859,16 +2454,9 @@ async function runInstallCommandInner(options: InstallOptions, summary: InstallS
     log.info('Claude Code: leaving native auto-memory enabled unless you explicitly opt in to disabling it.');
   }
 
-  // Browser funnel (GUI mode): the worker starts before any login or provider
+  // Browser funnel (GUI mode): the worker starts before any provider
   // question, the setup page opens, and the terminal waits on the worker's
-  // setup state with no time limit. Login happens only if the page picks On
-  // The Go. Everything else keeps the terminal flow below unchanged.
-  let oauthPairing: InstallerOAuthPairing | null = null;
-  // On The Go's pairing, held for the checkout hand-off (funnel Phase 8):
-  // completeCmemTrialPairing(onTheGoPairing) runs when the page asks for checkout.
-  let onTheGoPairing: InstallerOAuthPairing | null = null;
-  let browserCloudSyncOffer: SetupCloudSyncOffer | undefined;
-  let shareWorkView: true | undefined;
+  // setup state with no time limit. Every choice is local; there is no login.
   let browserProvider: ProviderId = (getSetting('CLAUDE_MEM_PROVIDER') as ProviderId) || 'claude';
   let browserOutcome: BrowserSetupOutcome | null = null;
   let settingsBeforeBrowserSetup: string | null = null;
@@ -2936,42 +2524,17 @@ async function runInstallCommandInner(options: InstallOptions, summary: InstallS
                 if (!selection.disableAutoMemory) enableClaudeAutoMemory();
               }
               if (!installCatalog!.telemetryLocked) recordTelemetryDecision(selection.telemetryEnabled);
-              if (resumedState?.install?.catalog.emailEnabled) await applyLegacyBrowserEmail(selection, version);
             },
           },
-          applyChoice: async (choice, state) => {
-            browserCloudSyncOffer = setupCloudSyncOffer(choice);
-            shareWorkView = choice.shareWorkView;
-            if (choice.branch === 'home') {
-              // At Home: the existing local branch (logged-in Claude SDK account, no claude-mem login).
-              options.provider = 'claude';
-              options.providerSource = 'browser';
-              browserProvider = await promptProvider(options, null, version);
-              await promptClaudeModel(options, false);
-              return 'home-ready';
-            }
-            if (state.alreadyPro) {
-              log.info('On The Go: keeping your existing Cloud Sync and memory configuration.');
-              return 'go-kept-existing-pro';
-            }
-            onTheGoPairing = await startOnTheGoPairing(version, browserCloudSyncOffer, shareWorkView);
-            return 'go-awaiting-checkout';
-          },
-          // The claim route carries the pairing's confirmed product/offer through sign-in and checkout.
-          checkout: {
-            run: async () => {
-              // A pairing whose checkout failed or was cancelled is not reused; the next ask starts a fresh one.
-              if (!onTheGoPairing) onTheGoPairing = await startOnTheGoPairing(version, browserCloudSyncOffer, shareWorkView);
-              const pairing: InstallerOAuthPairing = onTheGoPairing;
-              const delivered = await completeCmemTrialPairing(pairing, version);
-              if (!delivered) { onTheGoPairing = null; return false; }
-              if (!browserCloudSyncOffer) browserProvider = activateBrowserEnrollment(delivered) ?? browserProvider;
-              return true;
-            },
-            reopen: () => {
-              const pairing = onTheGoPairing as InstallerOAuthPairing | null;
-              if (pairing) openBrowser(pairing.checkoutUrl);
-            },
+          applyChoice: async (choice) => {
+            // Local-only funnel: every choice resolves to the local provider
+            // (logged-in Claude SDK account, no claude-mem login). The checkout
+            // branch and its pairing hand-off are gone.
+            options.provider = 'claude';
+            options.providerSource = 'browser';
+            browserProvider = await promptProvider(options);
+            await promptClaudeModel(options, false);
+            return 'home-ready';
           },
         });
       }
@@ -3002,53 +2565,15 @@ async function runInstallCommandInner(options: InstallOptions, summary: InstallS
   // The terminal flow: non-TTY (agent-run) installs, --provider, --no-auto-start,
   // the server runtime, and machines that already finished the funnel.
   const terminalAccountAndProvider = async (): Promise<ProviderId> => {
-    oauthPairing = await completeUpdateProviderSetup(options, version);
-    // Login runs up front for an install that named an account-backed provider.
-    // An install that named a provider needing no claude-mem account skips it.
-    // `--provider claude` (or the non-interactive default to claude) runs memory on the user's own Anthropic
-    // plan, so gating it on browser OAuth made an unrelated cmem.ai outage fail
-    // an install that could have completed offline — and there is no account
-    // question left to ask, because the provider already answered it. Such a
-    // non-interactive install still prints an optional, non-blocking sign-in
-    // link at the very end (offerDeferredLogin).
-    //
-    // Deliberately keyed on the resolved provider, not on reachability: a silent
-    // fallback to a local install whenever cmem.ai is down would quietly change
-    // what the user gets. This only skips a step the provider choice made moot.
-    //
-    // A provider reused from settings on a non-interactive run (`persisted`) is
-    // exempt too, even when it is account-backed: the machine already holds its
-    // account and credentials, and promptProvider returns early for it without
-    // enrolling anything. Running the blocking browser login here would hang an
-    // agent shell polling for up to the pairing TTL and then exit 1.
-    //
-    // An interactive run with no provider named signs in only if the provider
-    // prompt picks CMEM Pro: the email opt-in up front is the lead capture, so
-    // the account is no longer a gate in front of a local install.
-    if (options.providerSource === 'persisted') {
-      if (!oauthPairing) log.info(`Skipping claude-mem login: keeping the existing account and ${options.provider} configuration.`);
-    } else if (isInteractive && !options.provider) {
-      // Sign-in waits for the provider prompt (CMEM Pro only).
-    } else if (providerNeedsAccount(options.provider)) {
-      oauthPairing = await requireInstallerOAuthLogin(version);
-      if (!oauthPairing) {
-        if (isInteractive) p.cancel('OAuth login is required to finish installation.');
-        else console.error('OAuth login is required to finish installation.');
-        process.exit(1);
-      }
-    } else {
-      const skipReason = options.provider === 'host'
-        ? 'host observer uses the logged-in host agent over a local OpenAI-compatible shim.'
-        : options.providerSource === 'default'
-          ? 'no --provider was given, so memory defaults to your own Anthropic plan.'
-          : '--provider claude runs memory on your own Anthropic plan.';
-      log.info(`Skipping claude-mem login: ${skipReason}`);
-    }
-    const signInForCmem = async (): Promise<InstallerOAuthPairing | null> => {
-      oauthPairing = await requireInstallerOAuthLogin(version);
-      return oauthPairing;
-    };
-    const selectedProvider = await promptProvider(options, oauthPairing, version, signInForCmem);
+    // An update with a persisted provider repairs only a missing credential
+    // (completeUpdateProviderSetup); everything else keeps its configuration.
+    await completeUpdateProviderSetup(options, summary);
+    // This build installs fully locally: there is no claude-mem sign-in, no
+    // browser OAuth and no account step, whatever provider is resolved. The
+    // provider step below applies the GPUStack defaults for a fresh openrouter
+    // install and asks for a missing gateway key locally.
+    log.info('Skipping claude-mem sign-in: this build installs fully locally.');
+    const selectedProvider = await promptProvider(options);
     if (selectedProvider === 'claude') {
       await promptClaudeModel(options, isInteractive && !(options.update && options.providerSource === 'persisted'));
     }
@@ -3084,7 +2609,7 @@ async function runInstallCommandInner(options: InstallOptions, summary: InstallS
             : `Skipped (non-TTY)`;
         }
         // The browser funnel started the worker already. It reads the provider and model live, so it restarts only
-        // for settings it reads at boot (cloud sync after On The Go's checkout), and never while it is extracting
+        // for settings it reads at boot (cloud sync, when a saved configuration carries it), and never while it is extracting
         // goals, work and rules or importing history: the restart waits for that work, however long it takes.
         if (browserOutcome) {
           const needRestart = settingsChangesNeedingRestart(settingsBeforeBrowserSetup ?? '', readSettingsSnapshot());
@@ -3115,30 +2640,19 @@ async function runInstallCommandInner(options: InstallOptions, summary: InstallS
   const installStatus = options.update
     ? hasFailures ? 'Update Partial' : 'Update Complete'
     : hasFailures ? 'Installation Partial' : 'Installation Complete';
-  // Keyed on whether a pairing actually ran, not on the provider class: a
-  // persisted account-backed provider skips login and must not claim it. A
-  // persisted claude/host provider holds no claude-mem account at all, so it
-  // reports "not required" rather than a kept account.
-  const browserAccountStatus = browserOutcome?.checkoutPaid
-    ? browserCloudSyncOffer ? 'Cloud Sync connected' : `CMEM Pro ${PRO_TRIAL_LABEL} active`
-    : browserOutcome?.stage === 'go-awaiting-checkout'
-    ? `${browserCloudSyncOffer ? 'Cloud Sync' : 'CMEM Pro'} sign-in started (device setup incomplete)`
-    : browserOutcome?.stage === 'go-kept-existing-pro'
-      ? 'Kept existing Cloud Sync and memory configuration'
-      : null;
-  // The provider this run ended up with: an interactive run with no
-  // --provider picks it at the prompt, so options.provider is unset there.
-  // A named provider wins, because host reports its transport (openrouter).
+  // No account step exists in this local-only build: an install either kept
+  // the machine's existing configuration or needed nothing beyond the local
+  // key prompts. (The funnel's `home-kept-existing` stage arrives with the
+  // home-only contract; until then any browser run maps to the kept case.)
+  const browserAccountStatus = browserOutcome
+    ? 'Kept existing configuration'
+    : null;
+  // The provider this run ended up with: the default openrouter path sets it,
+  // and a named provider wins, because host reports its transport (openrouter).
   const summaryProvider = options.provider ?? selectedProvider;
-  const accountStatus = oauthPairing
-    ? 'OAuth login complete'
-    : summaryProvider === 'host'
-      ? 'Not required (host observer)'
-      : !providerNeedsAccount(summaryProvider)
-        ? 'Not required (local provider)'
-        : options.providerSource === 'persisted'
-          ? 'Kept existing account (no login this run)'
-          : 'No login this run';
+  const accountStatus = options.providerSource === 'persisted'
+    ? 'Kept existing configuration'
+    : summaryProvider === 'host' ? 'Not required (host observer)' : 'Not required (local install)';
   const summaryLines = [
     `Version:     ${styleText('cyan', version)}`,
     `Plugin dir:  ${styleText('cyan', marketplaceDir)}`,
@@ -3282,8 +2796,7 @@ async function runInstallCommandInner(options: InstallOptions, summary: InstallS
     `Memory injection starts on your second session in a project.`,
     cloudSyncConfigured
       ? 'Saved memories sync across your connected agents and devices.'
-      : `Everything stays in ${styleText('cyan', '~/.claude-mem')} on this machine. cmem.ai gets only your email and optional note (with the claude-mem version and OS) if you share them when an interactive terminal install asks, and a numbers-only usage summary (observation counts and token totals, no prompts, paths, or project names) when setup creates a sign-in link; nothing else is sent to cmem.ai unless you choose to upload your prompts during browser setup (telemetry is separate: npx claude-mem telemetry).`,
-    ...(cloudSyncConfigured ? [] : [`Try Cloud Sync and private Work View free for 30 days. No card needed for your first trial. ${styleText('underline', 'https://cmem.ai/cloud-sync/start')}`]),
+      : `Everything stays in ${styleText('cyan', '~/.claude-mem')} on this machine. Nothing is sent anywhere (telemetry is separate: npx claude-mem telemetry).`,
     ``,
     `${styleText('dim', `Optional: ${'/learn-codebase'} ingests a whole repo up front (~5 min)   ·   How it works: /how-it-works`)}`,
   ];
@@ -3312,12 +2825,6 @@ async function runInstallCommandInner(options: InstallOptions, summary: InstallS
       process.exitCode = 1;
     } else {
       console.log(options.update ? '\nclaude-mem updated successfully!' : '\nclaude-mem installed successfully!');
-    }
-    // Keep the optional sign-in link separate from the local setup page.
-    try {
-      await offerDeferredLogin(options, version);
-    } catch {
-      // best-effort only
     }
     if (shouldPrintAgentBrowserSetupHint({
       ci: Boolean(process.env.CI),

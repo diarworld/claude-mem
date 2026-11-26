@@ -18,8 +18,7 @@
  * keeps working past `ends_at`, so the date alone must never disable anything.
  *
  * Shared (not npx-cli) because the worker, the session-start hook, and the
- * installer all need the same gateway check. The npx-cli endpoint constants in
- * src/npx-cli/cmem-pro-costs.ts derive from the same origin resolution.
+ * installer all need the same gateway check.
  */
 
 import { existsSync, mkdirSync, unlinkSync, writeFileSync } from 'fs';
