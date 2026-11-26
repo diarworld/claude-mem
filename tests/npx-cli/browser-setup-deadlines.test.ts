@@ -74,51 +74,6 @@ for (const stalled of ['headers', 'body'] as const) {
   });
 }
 
-test('a stalled watcher releases setup after checkout has saved paid credentials', async () => {
-  let stage: string | undefined, checkout: string | undefined;
-  let finishCheckout: ((paid: boolean) => void) | undefined;
-  let credentialsSaved = false, stalled = false, paidReports = 0;
-  await withWorker((request, response) => {
-    if (request.method === 'POST') {
-      let body = '';
-      request.on('data', chunk => { body += String(chunk); });
-      request.on('end', () => {
-        const report = JSON.parse(body);
-        stage = report.stage;
-        if (report.checkout) checkout = report.checkout;
-        if (report.checkout === 'paid') paidReports++;
-        response.end('{}');
-      });
-      return;
-    }
-    if (checkout === 'waiting' && !stalled) {
-      stalled = true;
-      response.writeHead(200, { 'content-type': 'application/json' });
-      response.write('{');
-      credentialsSaved = true;
-      finishCheckout!(true);
-      return;
-    }
-    response.end(JSON.stringify({
-      ...INITIAL_SETUP_STATE, alreadyPro: false,
-      choice: stage ? { branch: 'go', memoryBilling: 'hosted', chosenAt: 'now' } : null,
-      checkout: stage === 'go-awaiting-checkout' ? { state: checkout ?? 'requested', requests: 1, error: null, updatedAt: 'now' } : null,
-      status: checkout === 'paid' ? 'complete' : 'pending',
-    }));
-  }, async (workerBaseUrl, request, watchdogFired) => {
-    const outcome = await runBrowserSetup({
-      workerBaseUrl, fetch: request, log, openBrowser: () => {}, pollIntervalMs: 1,
-      applyChoice: async () => 'go-awaiting-checkout',
-      checkout: { run: () => new Promise<boolean>(resolve => { finishCheckout = resolve; }), reopen: () => {} },
-    });
-    assert.equal(watchdogFired(), false);
-    assert.equal(credentialsSaved, true);
-    assert.equal(paidReports, 1);
-    assert.equal(outcome.checkoutPaid, true);
-    assert.equal(outcome.state.status, 'complete');
-  });
-});
-
 test('an installer report cannot wait indefinitely for response headers', async () => {
   await withWorker((request, response) => {
     if (request.method !== 'POST') response.end(JSON.stringify({ ...INITIAL_SETUP_STATE, alreadyPro: false }));

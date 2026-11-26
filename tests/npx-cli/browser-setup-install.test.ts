@@ -36,7 +36,7 @@ if (originalOsDefault) Object.defineProperty(scopedOs, 'default', { ...originalO
 mock.module('os', () => scopedOs);
 mock.module('node:os', () => scopedOs);
 Object.defineProperty(process.stdin, 'isTTY', { configurable: true, value: true });
-// The checkout wait listens for Ctrl-C in raw mode, as on a real terminal.
+// The browser-open wait listens for Return/Ctrl-C in raw mode, as on a real terminal.
 if (typeof (process.stdin as { setRawMode?: unknown }).setRawMode !== 'function') {
   Object.defineProperty(process.stdin, 'setRawMode', { configurable: true, value: () => process.stdin });
 }

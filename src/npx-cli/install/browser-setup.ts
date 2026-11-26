@@ -2,8 +2,8 @@
 // until the page finishes setup. The worker holds the state (GET /api/setup/state); the terminal only waits.
 // There is no overall time limit for the person: the URL is printed once the worker answers, and if the browser
 // never connects the wait goes on. Individual worker requests are bounded so an unresponsive connection cannot pin
-// a poll or keep the installer waiting after checkout has finished.
-import type { SetupCheckoutState, SetupChoice, SetupInstallerStage, SetupStateView } from '../../shared/setup-state.js';
+// a poll or keep the installer waiting.
+import type { SetupChoice, SetupInstallerStage, SetupStateView } from '../../shared/setup-state.js';
 import type { SetupInstallCatalog, SetupInstallSelection, SetupInstallStatus } from '../../shared/setup-install.js';
 import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js';
 import { settingsTarget, type SettingsDocument } from '../../shared/settings-document.js';
@@ -11,14 +11,6 @@ import { settingsTarget, type SettingsDocument } from '../../shared/settings-doc
 // Every request here goes to the local worker on loopback, and these routes answer from a small local JSON file
 // (WorkViewRoutes setup-state handlers), so 5 s only trips on a stalled connection, never on a slow answer.
 const WORKER_REQUEST_TIMEOUT_MS = 5_000;
-
-/** On The Go checkout on the existing pairing path (funnel Phase 8). */
-export interface BrowserCheckout {
-  /** Opens the pairing's checkout and waits for it however long it takes; true once paid and the settings are saved. */
-  run: () => Promise<boolean>;
-  /** The page asked again while a checkout is open: open the same checkout page again. */
-  reopen: () => void;
-}
 
 /**
  * GUI mode: a person at a terminal, with nothing on the command line that already answers the setup questions.
@@ -70,8 +62,6 @@ export interface BrowserSetupDeps {
   resume?: boolean;
   /** Applies the choice and returns the stage to report. Throwing reports `failed` and ends the hand-off. */
   applyChoice: (choice: SetupChoice, state: SetupStateView) => Promise<SetupInstallerStage>;
-  /** Runs when the page asks for checkout after the choice left the installer at `go-awaiting-checkout`. */
-  checkout?: BrowserCheckout;
   fetch?: typeof fetch;
   sleep?: (ms: number) => Promise<void>;
   pollIntervalMs?: number;
@@ -81,8 +71,6 @@ export interface BrowserSetupOutcome {
   choice: SetupChoice;
   stage: SetupInstallerStage;
   state: SetupStateView;
-  /** On The Go only: the checkout finished and the CMEM Pro settings were saved. */
-  checkoutPaid: boolean;
 }
 
 export function setupPageUrl(workerBaseUrl: string): string {
@@ -140,11 +128,11 @@ export async function runBrowserSetup(deps: BrowserSetupDeps): Promise<BrowserSe
       await sleep(pollIntervalMs);
     }
   };
-  const report = async (stage: SetupInstallerStage, error: string | null = null, checkout?: Exclude<SetupCheckoutState, 'requested'>): Promise<void> => {
+  const report = async (stage: SetupInstallerStage, error: string | null = null): Promise<void> => {
     const response = await request(`${deps.workerBaseUrl}/api/setup/installer`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(checkout ? { stage, error, checkout } : { stage, error }),
+      body: JSON.stringify({ stage, error }),
       signal: AbortSignal.timeout(WORKER_REQUEST_TIMEOUT_MS),
     });
     if (!response.ok) throw await workerResponseError(response, `The worker did not take the installer stage ${stage}`);
@@ -208,47 +196,9 @@ export async function runBrowserSetup(deps: BrowserSetupDeps): Promise<BrowserSe
   }
   await report(stage);
 
-  // On The Go: each checkout the page asks for runs here, on the pairing the installer holds. A failed or cancelled
-  // checkout is reported and the page can ask again; there is no time limit on either side.
-  let handledRequests = 0;
-  let checkoutPaid = false;
-  const newRequest = (state: SetupStateView) => stage === 'go-awaiting-checkout' && !checkoutPaid && !!deps.checkout
-    && state.checkout?.state === 'requested' && state.checkout.requests > handledRequests;
-  for (;;) {
-    const state = await waitFor((current) => current.status === 'complete' || newRequest(current));
-    if (state.status === 'complete') return { choice, stage, state, checkoutPaid };
-    handledRequests = state.checkout!.requests;
-    await report(stage, null, 'waiting');
-    let settled = false;
-    // While the checkout is open, a repeat Continue on the page opens it again.
-    const watchForRepeats = (async () => {
-      while (!settled) {
-        await sleep(pollIntervalMs);
-        const current = settled ? null : await readState();
-        if (current && newRequest(current)) {
-          handledRequests = current.checkout!.requests;
-          deps.checkout!.reopen();
-          await report(stage, null, 'waiting');
-        }
-      }
-    })().then(
-      () => ({ ok: true as const }),
-      (error: unknown) => {
-        // Observe failures immediately without interrupting checkout before it persists paid credentials.
-        const message = error instanceof Error ? error.message : String(error);
-        deps.log.warn(`${message} Waiting for the open checkout to finish before stopping setup.`);
-        return { ok: false as const, error };
-      },
-    );
-    let failure: string | null = null;
-    try { checkoutPaid = await deps.checkout!.run(); }
-    catch (error: unknown) { failure = error instanceof Error ? error.message : String(error); }
-    settled = true;
-    const watcherOutcome = await watchForRepeats;
-    if (checkoutPaid) await report(stage, null, 'paid');
-    else await report(stage, failure ?? 'Checkout did not finish. Continue to open it again.', 'failed');
-    if (!watcherOutcome.ok) throw watcherOutcome.error;
-  }
+  // The page runs the rest of setup itself; the terminal only waits for the worker to report completion, with no
+  // time limit, the same way it waited for the choice.
+  return { choice, stage, state: await waitFor((state) => state.status === 'complete') };
 }
 
 /**

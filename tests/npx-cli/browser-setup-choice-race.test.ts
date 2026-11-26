@@ -34,11 +34,11 @@ for (const source of ['browser', 'printed URL'] as const) {
         return Response.json(state);
       }) as typeof fetch,
       sleep: async () => { throw new Error('The submitted choice was cleared; setup is waiting for another click.'); },
-      applyChoice: async selected => { applied.push(selected); return 'go-kept-existing-pro'; },
+      applyChoice: async selected => { applied.push(selected); return 'home-ready'; },
     });
     assert.equal(opened, 1);
     assert.deepEqual(applied, [choice]);
-    assert.deepEqual(stages, ['waiting-for-choice', 'go-kept-existing-pro']);
+    assert.deepEqual(stages, ['waiting-for-choice', 'home-ready']);
     assert.equal(outcome.state.status, 'complete');
   });
 }
