@@ -28,6 +28,14 @@ that is logged:
 //artifactory.example/artifactory/api/npm/npm-local/:_auth=<base64 user:password>
 ```
 
+No auth is actually required for reads: the `npm` virtual repository serves
+`claude-mem` and all its public dependencies anonymously (the `_auth` line in
+the first computer's `.npmrc` is malformed for npm and only causes E401s — do
+not copy it). Install with `--registry https://art.lmru.tech/artifactory/api/npm/npm/`
+(the virtual repo). The `npm-local-dataplatform` repo hosts only the
+claude-mem tarball, so pointing `--registry` at it 404s on every transitive
+dependency (`@better-auth/api-key` first).
+
 Install:
 
 ```bash
