@@ -150,13 +150,16 @@ function recordOrEmpty<T>(value: unknown): Record<string, T> {
 }
 
 /**
- * The distinct peer device roots in one sync-root listing, own excluded,
- * sorted. The transport contract (S3Transport.listKeys) already walks
- * pagination and returns the COMPLETE key list, so nothing is paginated here;
- * a listing that is empty or (type-lying) undefined yields no peers.
+ * The distinct peer device-root segments in one sync-root listing, own
+ * excluded, sorted. `ownDeviceSegment` is the SANITIZED device name segment
+ * (`sanitizeDeviceName(device)` — what deviceRoot() embeds), never the full
+ * root and never a sync identity. The transport contract
+ * (S3Transport.listKeys) already walks pagination and returns the COMPLETE
+ * key list, so nothing is paginated here; a listing that is empty or
+ * (type-lying) undefined yields no peers.
  */
-export async function discoverPeers(transport: S3Transport, ownDeviceRoot: string): Promise<string[]> {
-  return peersFromKeys(await transport.listKeys(`${S3_SYNC_ROOT}/`), ownDeviceRoot);
+export async function discoverPeers(transport: S3Transport, ownDeviceSegment: string): Promise<string[]> {
+  return peersFromKeys(await transport.listKeys(`${S3_SYNC_ROOT}/`), ownDeviceSegment);
 }
 
 function emptySetState(): PersistedSetState {
@@ -316,7 +319,10 @@ export class S3SyncManager {
    * The last LATEST generation successfully merged from a peer (its
    * watermark), or null. A persisted value that is not a valid stamp (hand
    * -edited state) reads as null — it must never drive a comparison; status
-   * keeps showing the persisted truth.
+   * keeps showing the persisted truth. A LOST watermark is safe by design:
+   * the next tick re-merges the peer's current snapshot, which SyncApply
+   * absorbs idempotently (stable entity ids, rev guards, DO NOTHING) — do
+   * not harden this null into an error.
    */
   private peerWatermark(peerRoot: string): string | null {
     const stored = this.loadState().mergedGenerations[peerRoot];
@@ -983,6 +989,8 @@ export class S3SyncManager {
       syncIdentity: persisted.syncIdentity, // loadState guarantees presence
       sets: { db: fromState('db'), chroma: fromState('chroma') },
       merge: {
+        // peers is the LAST DISCOVERY's snapshot; mergedGenerations/mergeState
+        // are live and may name peers from earlier discoveries.
         peers: this.lastMergePeers,
         mergedGenerations: persisted.mergedGenerations,
         mergeState: persisted.mergeState,

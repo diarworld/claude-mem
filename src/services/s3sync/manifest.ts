@@ -54,22 +54,24 @@ export function deviceRoot(device: string): string {
 }
 
 /**
- * The distinct peer device roots in a complete key listing under the sync
- * root — the second path segment of every key, `ownDeviceRoot` excluded,
- * sorted. Device names are sanitized, so the segment comparison is exact.
- * Keys that carry no second segment (the bare root key, empty strings) and
- * keys outside the sync root yield nothing; deeper keys still name their
- * device — a device root always carries `<set>/…` below it, so any segment
- * count works.
+ * The distinct peer device-root SEGMENTS in a complete key listing under the
+ * sync root — the second path segment of every key, `ownDeviceSegment`
+ * excluded, sorted. The segment is the sanitized device NAME (what
+ * `deviceRoot(device)` embeds), NOT the full `claude-mem-sync/<device>` root
+ * and NOT a sync identity. Device names are sanitized, so the segment
+ * comparison is exact. Keys that carry no second segment (the bare root key,
+ * empty strings) and keys outside the sync root yield nothing; deeper keys
+ * still name their device — a device root always carries `<set>/…` below it,
+ * so any segment count works.
  */
-export function peersFromKeys(keys: readonly string[] | null | undefined, ownDeviceRoot: string): string[] {
+export function peersFromKeys(keys: readonly string[] | null | undefined, ownDeviceSegment: string): string[] {
   const peers = new Set<string>();
   for (const key of keys ?? []) {
     const parts = key.split('/');
     // [claude-mem-sync, <device>, …]
     if (parts[0] === S3_SYNC_ROOT && parts[1]) peers.add(parts[1]);
   }
-  peers.delete(ownDeviceRoot);
+  peers.delete(ownDeviceSegment);
   return [...peers].sort();
 }
 

@@ -112,6 +112,19 @@ describe('s3 sync peer discovery', () => {
     expect(manager.status().merge.peers).toEqual(['device-a']);
     await manager.stop();
   }));
+
+  test('discoverMergePeers sanitizes the raw device setting before excluding own (production path)', withTempDir(async dir => {
+    // Windows hostnames are commonly uppercase and may carry spaces; push
+    // writes the SANITIZED segment, so own-exclusion must key on the same
+    // sanitized form — not the raw setting.
+    const manager = makeManager(dir, { CLAUDE_MEM_S3_SYNC_DEVICE: 'Test Box' });
+    const s3 = (manager as unknown as { transport: FakeS3 }).transport;
+    s3.seed(`${S3_SYNC_ROOT}/test-box/db/LATEST`); // own, as sanitized
+    s3.seed(`${S3_SYNC_ROOT}/device-a/db/LATEST`);
+
+    expect(await manager.discoverMergePeers()).toEqual(['device-a']);
+    await manager.stop();
+  }));
 });
 
 describe('s3 sync per-peer watermarks', () => {
