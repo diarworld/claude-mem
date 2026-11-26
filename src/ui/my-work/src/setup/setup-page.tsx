@@ -9,17 +9,16 @@ import { backWaitsFor, choiceLocked, guardStep, hydrateSetupChoice, initialFlowS
 import type { SampleFailure, SampleScanStop } from './setup-sample'
 import { ChoiceScreen } from './screens/choice-screen'
 import { FinishSetupScreen } from './screens/finish-setup-screen'
-import { ImportScreen } from './screens/import-screen'
 import { InstallScreen } from './screens/install-screen'
 import { LaunchScreen } from './screens/launch-screen'
 import { RevealScreen } from './screens/reveal-screen'
 import { ScanScreen } from './screens/scan-screen'
-import { SetupButton, SetupError, type SetupBack } from './screens/shared'
+import { PageHeading, SetupButton, SetupError, type SetupBack } from './screens/shared'
 import { SetupStepBar } from './screens/step-bar'
 import { prefersReducedMotion } from './format'
 import { WorkspaceScreen } from './screens/workspace-screen'
 import { connectSetupTelemetry, createSetupTracker, sendSetupEvent } from './setup-telemetry'
-import { historyImportRunning, type SetupError as SetupErrorCode } from '../../../../shared/setup-funnel.ts'
+import type { SetupError as SetupErrorCode } from '../../../../shared/setup-funnel.ts'
 import './setup.css'
 
 const PARAMS = new URLSearchParams(window.location.search)
@@ -31,13 +30,12 @@ function useSetupSource(): SetupSource | null {
     if (!SAMPLE_REQUESTED) return
     let current = true
     // `&scan=<percent>` holds the scan there; `&scan=consent|failed` stops it at the upload question or a failure.
-    // `&fail=`, `&installer=on` and `&import=running`: setup-sample.ts's header says what each plays.
+    // `&fail=` and `&installer=on`: setup-sample.ts's header says what each plays.
     const scan = PARAMS.get('scan')
     const scanStop = (['consent', 'failed'] as const).find((stop): stop is SampleScanStop => stop === scan)
-    const fail = (['install', 'import', 'installer', 'choice', 'stop'] as const).find((kind): kind is SampleFailure => kind === PARAMS.get('fail'))
+    const fail = (['install', 'installer', 'choice'] as const).find((kind): kind is SampleFailure => kind === PARAMS.get('fail'))
     const installer = PARAMS.get('installer') === 'on'
-    const importRunning = PARAMS.get('import') === 'running'
-    import('./setup-sample').then(({ createSampleSetupSource }) => { if (current) setSource(createSampleSetupSource(PARAMS.get('sample') === 'new', scan !== null && !scanStop ? Number(scan) : null, (['partial', 'none'] as const).find((kind) => kind === PARAMS.get('usage')), PARAMS.get('agent') === 'none', { scanStop, fail, installer, importRunning })) })
+    import('./setup-sample').then(({ createSampleSetupSource }) => { if (current) setSource(createSampleSetupSource(PARAMS.get('sample') === 'new', scan !== null && !scanStop ? Number(scan) : null, PARAMS.get('agent') === 'none', { scanStop, fail, installer })) })
     return () => { current = false }
   }, [])
   return source
@@ -139,9 +137,8 @@ export default function SetupPage({ onComplete }: { onComplete: () => void }) {
   // A first load that never reached the worker knows nothing about the installation. It shows the stopped scan, with
   // its Try again, rather than an install screen with nothing to load.
   const installationComplete = installConfirmed || (data.install === undefined && data.connectionError !== null)
-  const historyAvailable = !!data.history && data.history.observations > 0
-  // This machine already has a working configuration the funnel keeps. (The fuller
-  // skip-choice flow — no choice screen at all — is Task 7.)
+  // This machine already has a working configuration the funnel keeps: the page answers the waiting installer
+  // itself and Finish Setup says so — the choice screen never asks what is already answered.
   const alreadyPro = data.alreadyPro
   if (flow.scanComplete !== scanComplete || flow.alreadyPro !== alreadyPro) {
     setFlow((current) => ({ ...current, scanComplete, alreadyPro }))
@@ -160,23 +157,14 @@ export default function SetupPage({ onComplete }: { onComplete: () => void }) {
     && (choiceApplied || requested === 'choice')) {
     update({ revealContinued: true, choiceContinued: true, finishTools: initialTools() }, 'finish-setup')
   } else if (scanMovesOn(requested, { ...flow, installationComplete, scanComplete })) setRequested('reveal')
-  if (flow.importStatus === 'none' && historyAvailable) setFlow((current) => ({ ...current, importStatus: 'available' }))
-  // The import screen shows only while the upload runs. When the worker says it ended (finished, failed, stopped by
-  // the person, or forgotten by a restart), the page goes back to Finish Setup, which says how it ended; only the
-  // person's Import starts it again (re-sending is safe).
-  if (requested === 'import' && !historyImportRunning(data.historyImport?.state ?? 'idle')) {
-    setFlow((current) => ({ ...current, importStatus: data.historyImport?.state === 'done' ? 'complete' : 'available' }))
-    setRequested('finish-setup')
-  }
 
   const flowNow: SetupFlowState = { ...flow, installationComplete, installConfirmed }
   const step = guardStep(requested, flowNow)
   useEffect(() => { if (data.scan.phase === 'failed') telemetry.error('scan_failed') }, [data.scan.phase, telemetry])
   useEffect(() => { if (data.installer?.stage === 'failed') telemetry.error('installer_failed') }, [data.installer?.stage, telemetry])
-  useEffect(() => { if (data.historyImport?.error) telemetry.error('import_failed') }, [data.historyImport?.error, telemetry])
   useEffect(() => {
-    if (source?.kind === 'local') telemetry.view(step, { branch: flow.branch, branch_confirmed: branchConfirmed, importComplete: flow.importStatus === 'complete' })
-  }, [source, step, flow.branch, branchConfirmed, flow.importStatus, telemetry])
+    if (source?.kind === 'local') telemetry.view(step, { branch: flow.branch, branch_confirmed: branchConfirmed })
+  }, [source, step, flow.branch, branchConfirmed, telemetry])
   // After the view effect, so the error counts against the consent step. It reads every tool the step offers, all
   // ticked as it opens, which is when the consent step first shows its over-the-cap warning (scan-screen.tsx).
   const consentOverCap = data.scan.phase === 'awaiting-consent' && uploadTooLarge(data.scan.agents)
@@ -185,7 +173,7 @@ export default function SetupPage({ onComplete }: { onComplete: () => void }) {
   const pickedTools = useMemo(() => tools.filter((tool) => flow.finishTools.includes(tool.id)), [tools, flow.finishTools])
 
   // Back on every screen but the first: the screen before this one on the person's path, through guardStep like any
-  // request; dimmed with the reason while a scan or an import runs (plan Phase 8).
+  // request; dimmed with the reason while a scan runs (plan Phase 8).
   const backTarget = previousStep(step, flowNow, { hasInstallStep: !!data.install, choiceLocked: choiceApplied })
   const back: SetupBack | null = backTarget && {
     waitsFor: backWaitsFor(step, data.scan.phase),
@@ -196,7 +184,7 @@ export default function SetupPage({ onComplete }: { onComplete: () => void }) {
   // The terminal waits on these hand-offs; a refusal stays on the screen it was sent from and says what failed and why.
   const [handOffError, setHandOffError] = useState<HandOffFailure | null>(null)
   const [handOffRetrying, setHandOffRetrying] = useState(false)
-  // `code` null: a hand-off the funnel's closed error list has no code for (Stop import), so its failure sends no event.
+  // `code` null: a hand-off the funnel's closed error list has no code for, so its failure sends no event.
   const handOff = async (send: () => Promise<void>, code: SetupErrorCode | null, title: string, retry?: () => Promise<void>): Promise<boolean> => {
     const failed = code ? telemetry.failure(code) : () => {}
     const sentFrom = step
@@ -250,24 +238,19 @@ export default function SetupPage({ onComplete }: { onComplete: () => void }) {
     setRequested('launch')
   }
 
-  const startImport = async (): Promise<void> => {
-    // A run the worker already reports running (found after a reload) is not started again: the worker answers with
-    // that run and the page shows its progress. Only a press that can start one counts as a start.
-    if (!historyImportRunning(data.historyImport?.state ?? 'idle')) telemetry.action('start_import')
-    if (await handOff(() => source!.startHistoryImport(), 'import_failed', 'Couldn’t start the import.', startImport)) update({ importStatus: 'running' }, 'import')
-  }
-  // Stop import: the worker ends the upload at once and answers with the stopped run, which takes the page back to
-  // Finish Setup (above), or keeps it there when the Stop was pressed on Finish Setup's running line. The button says it
-  // is stopping until then; a refusal stays on the screen it was sent from, with Try again.
-  const [stoppingImport, setStoppingImport] = useState(false)
-  const stopPending = useRef(false)
-  const stopImport = async (): Promise<void> => {
-    if (stopPending.current) return
-    stopPending.current = true
-    setStoppingImport(true)
-    try { await handOff(() => source!.stopHistoryImport(), null, 'Couldn’t stop the import.', stopImport) }
-    finally { stopPending.current = false; setStoppingImport(false) }
-  }
+  // Already-configured machines never answer the choice question: this machine's working configuration is kept,
+  // so when the choice step opens, the page sends it once itself. The worker takes the same choice again after a
+  // reload without a fight (an applied identical choice is served, not refused), and a choice it already applied
+  // never reaches this step — the restore above sends the page straight to Finish Setup. The interstitial below
+  // stands in for the choice screen while the answer is on its way.
+  const keptExistingChoice = flow.alreadyPro && installationComplete && !choiceEdited.current
+    && (!data.choice || (data.choice.branch === 'home' && data.choice.memoryBilling === 'existing'))
+  const keptExistingSent = useRef(false)
+  useEffect(() => {
+    if (step !== 'choice' || !keptExistingChoice || choiceApplied || choicePending.current || keptExistingSent.current) return
+    keptExistingSent.current = true
+    void submitChoice('home')
+  })
 
   // A failed handoff can restart its installer and retry the current choice from this page.
   const installerFailed = data.installer?.stage === 'failed'
@@ -308,19 +291,23 @@ export default function SetupPage({ onComplete }: { onComplete: () => void }) {
       scanComplete={scanComplete} installedAgentCount={data.install?.status === 'ready' ? data.install.selection?.agents.length : undefined}
       skipped={flow.scanSkipped && !scanComplete} back={savingChoice ? null : back}
       onContinue={() => update({ revealContinued: true }, 'choice')} />,
-    choice: () => <ChoiceScreen branch={flow.branch} saving={savingChoice} back={back} onChoose={(branch) => void submitChoice(branch)} />,
+    // An already-configured machine sees no choice here: the page has answered it (keptExistingChoice above), and
+    // this says so while the installer takes it.
+    choice: () => flow.alreadyPro ? (
+      <section aria-labelledby="keep-existing-title">
+        <PageHeading id="keep-existing-title" title={t('Keeping your existing configuration.')}
+          lead={t('Memory stays on this computer, written by your internal model gateway.')} />
+      </section>
+    ) : <ChoiceScreen branch={flow.branch} saving={savingChoice} back={back} onChoose={(branch) => void submitChoice(branch)} />,
     'finish-setup': () => (
       <FinishSetupScreen tools={tools} selected={flow.finishTools} onSelect={(finishTools) => update({ finishTools })}
-        history={null} importStatus={flow.importStatus}
-        importResult={data.historyImport} back={back}
-        stoppingImport={stoppingImport} onStopImport={() => void stopImport()}
-        onImport={() => void startImport()}
+        back={back}
         onContinue={() => void finishSetup()} />
     ),
     // Legacy wire steps with no screens left: guardStep lands any request for them on Finish Setup.
     savings: () => screens['finish-setup'](),
     checkout: () => screens['finish-setup'](),
-    import: () => <ImportScreen progress={data.historyImport} back={back} stopping={stoppingImport} onStop={() => void stopImport()} />,
+    import: () => screens['finish-setup'](),
     launch: () => <LaunchScreen tools={pickedTools} back={back} onDone={() => setRequested('workspace')} />,
     workspace: () => <WorkspaceScreen suggestions={data.suggestions} back={back} search={(query) => source!.search(query)} keepNote={(record, text) => source!.keepNote(record, text)} forgetNote={(id) => source!.forgetNote(id)} onContinue={() => void finishAll()} />,
   }

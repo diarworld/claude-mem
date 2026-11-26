@@ -51,7 +51,7 @@ describe('actual setup screen telemetry', () => {
     assert.deepEqual(sent.filter(event => event.event === 'setup_step_viewed').map(event => event.step), ['scan', 'reveal', 'choice', 'finish-setup', 'workspace'])
     assert(sent.filter(event => event.event === 'setup_step_transitioned').every(event => event.direction === 'forward'))
   })
-  it('preserves a new visit on each return, and differentiates successful from failed imports', async () => {
+  it('preserves a new visit on each return to an earlier step', async () => {
     const { tracker, sent } = fixture()
     tracker.start({ setup_flow_id: flow, already_pro: false })
     tracker.view('scan', early)
@@ -59,19 +59,11 @@ describe('actual setup screen telemetry', () => {
     tracker.view('scan', early)
     tracker.view('choice', home)
     tracker.view('finish-setup', home)
-    tracker.view('import', home)
-    tracker.error('import_failed')
-    tracker.error('import_failed')
-    tracker.view('finish-setup', home)
-    tracker.view('import', home)
-    tracker.view('finish-setup', { ...home, importComplete: true })
     await tracker.flush()
     const transitions = sent.filter(event => event.event === 'setup_step_transitioned')
     assert.equal(transitions[0].direction, 'forward')
     assert.equal(transitions[1].direction, 'back')
     assert.notEqual(transitions[0].visit_id, transitions[2].visit_id)
-    assert.deepEqual(transitions.filter(event => event.step === 'import').map(event => event.direction), ['back', 'forward'])
-    assert.equal(sent.filter(event => event.event === 'setup_step_error').length, 1)
     assert.equal(new Set(transitions.map(event => event.visit_id)).size, transitions.length)
   })
   it('only confirms the actual choice and prepares completion for the successful worker write', async () => {

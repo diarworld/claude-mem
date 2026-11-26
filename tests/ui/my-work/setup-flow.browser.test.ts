@@ -7,7 +7,6 @@ import {
   failOnCiWithoutChrome, htmlResponse, launchChrome, scriptResponse, withTimeout, type DevToolsPage, type OwnedChrome,
 } from '../../helpers/chrome-devtools';
 import { CONTENT_BODY_MAX_BYTES } from '../../../src/shared/cloud-sync-limits';
-import { HISTORY_IMPORT_BATCH } from '../../../src/shared/setup-funnel';
 import { SETUP_DSH_PROFILE_MAX_CHARACTERS } from '../../../src/shared/setup-install';
 
 failOnCiWithoutChrome('CI requires Chrome for the setup flow touch-size, type-size and Back regressions.');
@@ -21,12 +20,12 @@ failOnCiWithoutChrome('CI requires Chrome for the setup flow touch-size, type-si
  * - no visible text is under 14px;
  * - a finished scan moves on to the Reveal by itself, and Back goes where the flow says, pressed for real;
  * - the Reveal's pictures stay 64px on a phone, and "Continue with new work" does nothing while "Try again" runs;
- * - "Stop import" ends the upload and returns to Finish Setup, and only the person's press starts it again (E9);
  * - the launch hands over to the workspace when it did before Phase 8, and plays once;
  * - the DeepSeek Harness profile keeps the worker's limit and says when a paste is cut;
  * - setup offers installation preferences and submits them without collecting a signup.
- * Two walks use the page's own source against a fake worker in this process instead (`fakeWorker`): a run found running
- * after a reload, Stop and Continue through the real data path, telemetry, and the event stream's reconnect.
+ * One walk uses the page's own source against a fake worker in this process instead (`fakeWorker`): an
+ * already-configured machine answering the storage choice itself, once, through the real data path and telemetry,
+ * with the event stream's reconnect starting nothing again.
  */
 let compiled: { bundle: string; styles: string } | undefined;
 async function compileSetupPage() {
@@ -187,29 +186,21 @@ async function withSetupPage(query: string, viewport: { width: number; height: n
   }
 }
 
-/** A run of the history upload as the worker reports it (history-import.ts HistoryImportState). */
-const uploadRun = (changes: object = {}) => ({
-  state: 'running', total: 128, sent: 0, unconfirmed: 0, imported: 0, skipped: 0, percent: 0, error: null,
-  startedAt: '2026-11-16T10:00:00.000Z', finishedAt: null, ...changes,
-});
-
 type FakeWorker = ReturnType<typeof fakeWorker>;
 /**
  * A worker for the page's own source (no `?source=sample`), in this process: setup's reads, its event stream (`send`
- * writes a frame, `drop` ends every stream so the page's EventSource reconnects), telemetry, the storage choice, and the
- * upload's start and stop, which play `run` the way the worker does: every change goes out as a `setup-import` frame
- * before the request's answer. Every request is recorded. Nothing here reaches a real worker or cmem.ai.
+ * writes a frame, `drop` ends every stream so the page's EventSource reconnects), telemetry, and the storage choice,
+ * applied the way the installer answers. Every request is recorded. Nothing here reaches a real worker or cmem.ai.
  */
-function fakeWorker(initialRun: object, setupChanges: object = {}, scanChanges: object = {}) {
+function fakeWorker(setupChanges: object = {}, scanChanges: object = {}) {
   const requests: Array<{ method: string; path: string; body: any }> = [];
   const streams = new Set<ReadableStreamDefaultController<Uint8Array>>();
   const encoder = new TextEncoder();
   let connections = 0;
-  let run: any = initialRun;
   let persisted = setupChanges;
   const state = () => ({
     status: 'pending', alreadyPro: true, choice: null, install: null, installer: null,
-    history: { projects: 3, sessions: 24, observations: 128 }, historyImport: run, backgroundWorkRunning: [],
+    backgroundWorkRunning: [],
     ...persisted,
   });
   const frame = (event: string, data: unknown) => encoder.encode(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
@@ -222,7 +213,6 @@ function fakeWorker(initialRun: object, setupChanges: object = {}, scanChanges: 
     persisted = { ...persisted, ...changes };
     send('setup-state', state());
   };
-  const update = (changes: object) => { run = { ...run, ...changes }; send('setup-import', run); };
   const handle = async (request: Request): Promise<Response | null> => {
     const { pathname } = new URL(request.url);
     if (!pathname.startsWith('/api/')) return null;
@@ -248,30 +238,15 @@ function fakeWorker(initialRun: object, setupChanges: object = {}, scanChanges: 
     if (route === 'GET /api/setup/telemetry') return Response.json({ context: { setup_flow_id: '0f8fad5b-d9cb-469f-a165-70867728950e', already_pro: true } });
     if (route === 'POST /api/setup/telemetry') return Response.json({ ok: true });
     if (route === 'POST /api/setup/choice') {
-      // The home-only funnel: the choice is applied at once, the way the installer answers, with no checkout to open.
-      reportSetup({ choice: body, installer: { stage: 'home-ready' } });
+      // The home-only funnel: the choice is applied at once, the way the installer answers — `home-kept-existing`
+      // where the machine's existing configuration is kept, `home-ready` on a fresh one.
+      reportSetup({ choice: body, installer: { stage: state().alreadyPro ? 'home-kept-existing' : 'home-ready' } });
       return Response.json(state());
-    }
-    if (route === 'POST /api/setup/import') {
-      // One run at a time: a start while one runs answers with that run and starts nothing.
-      if (run.state === 'running') return Response.json(run, { status: 202 });
-      // The person's Continue after a Stop at 100 of 128 sent: cmem.ai has the first 100 and skips them, then writes the
-      // 28 it never saved (the worker's numbers, history-import-stop.test.ts). 400ms a batch, so the import screen shows.
-      update(uploadRun({ startedAt: '2026-11-16T10:05:00.000Z' }));
-      setTimeout(() => update({ sent: 100, skipped: 100, percent: 78 }), 400);
-      setTimeout(() => update({ state: 'done', sent: 128, imported: 28, skipped: 100, percent: 100, finishedAt: '2026-11-16T10:05:01.000Z' }), 800);
-      return Response.json(run, { status: 202 });
-    }
-    if (route === 'POST /api/setup/import/stop') {
-      if (run.state !== 'running') return Response.json({ error: 'No import is running, so there is nothing to stop.' }, { status: 409 });
-      update({ state: 'stopped', unconfirmed: run.total - run.sent, finishedAt: '2026-11-16T10:01:00.000Z' });
-      return Response.json(run);
     }
     return Response.json({ error: `The fake worker has no ${route}.` }, { status: 404 });
   };
   return {
     handle, send, state, reportSetup,
-    setRun(next: object) { run = next; },
     connections: () => connections,
     drop() { for (const stream of [...streams]) { streams.delete(stream); stream.close(); } },
     /** The page's POSTs other than telemetry, in order. */
@@ -298,7 +273,7 @@ function fakeWorker(initialRun: object, setupChanges: object = {}, scanChanges: 
 }, 45_000);
 
 (chromeExecutablePath ? it : it.skip)('the single At Home choice finishes locally without a checkout', async () => {
-  const worker = fakeWorker(uploadRun({ state: 'idle' }), { alreadyPro: false });
+  const worker = fakeWorker({ alreadyPro: false });
   await withSetupPage('', { width: 1440, height: 900, phone: false }, async page => {
     await page.atStep('reveal');
     await page.press('.setup-actions .primary', 'Continue');
@@ -319,21 +294,12 @@ for (const plan of [
   { name: 'kept existing configuration', choice: { branch: 'home', memoryBilling: 'existing' }, stage: 'home-kept-existing', alreadyPro: true, next: 'finish-setup' },
 ]) {
   (chromeExecutablePath ? it : it.skip)(`reloading setup preserves the applied ${plan.name}`, async () => {
-    const worker = fakeWorker(uploadRun({ state: 'idle' }), { alreadyPro: plan.alreadyPro, choice: plan.choice, installer: { stage: plan.stage } });
+    const worker = fakeWorker({ alreadyPro: plan.alreadyPro, choice: plan.choice, installer: { stage: plan.stage } });
     await withSetupPage('', { width: 390, height: 844, phone: true }, async page => {
       await page.atStep(plan.next);
       expect(worker.posts()).toEqual([]);
     }, worker);
   }, 30_000);
-}
-
-/** The fake worker's scan is complete and the home choice needs no checkout. */
-async function toFinishSetupOnTheWorker(page: SetupWalk) {
-  await page.atStep('reveal');
-  await page.press('.setup-actions .primary', 'Continue');
-  await page.atStep('choice');
-  await page.press('.setup-actions .primary', 'Use this computer');
-  await page.atStep('finish-setup');
 }
 
 /** Ticks the reinstall box and installs, the way into the scan on the sample fixtures. */
@@ -531,79 +497,6 @@ async function install(page: SetupWalk) {
 // About 14s: the scan stops at 3.2s, Try again answers in 1.2s, then the new scan plays for 8s; 90s allows a slow shared runner.
 }, 90_000);
 
-/** From the install screen to Finish Setup (the sample's one storage choice). */
-async function toFinishSetup(page: SetupWalk) {
-  await install(page);
-  // The sample scan plays for 8s, then opens the Reveal by itself.
-  await page.atStep('reveal');
-  await page.press('.setup-actions .primary', 'Continue');
-  await page.atStep('choice');
-  await page.press('.setup-actions .primary', 'Use this computer');
-  await page.atStep('finish-setup');
-}
-
-(chromeExecutablePath ? it : it.skip)('"Stop import" ends the upload, says what was sent, and only the person starts it again', async () => {
-  const seen: Record<string, any> = {};
-  await withSetupPage('', { width: 390, height: 844, phone: true }, async (page) => {
-    const row = () => page.browser.evaluate('window.row()');
-    const stoppedText = () => page.browser.evaluate(`document.querySelector('.history-stopped')?.innerText ?? null`);
-    const startImport = async () => {
-      await page.press('.history-permission input');
-      await page.press('.history-actions .import-button', 'Add saved memories');
-      await page.atStep('import');
-    };
-    await toFinishSetup(page);
-    await startImport();
-    // Pressed at once: the sample import sends its two batches 1.8s apart and its Stop answers after 1.2s
-    // (setup-sample.ts IMPORT_MS, ANSWER_MS), so the stop lands while the import still runs.
-    expect(await row()).toEqual({ back: 'dimmed', waiting: 'Back waits while the import runs.', forward: ['Stop import'] });
-    await page.press('.setup-actions .secondary', 'Stop import');
-    // Stopping: the button says so and takes no second press until the worker answers.
-    expect(await row()).toEqual({ back: 'dimmed', waiting: 'Back waits while the import runs.', forward: ['Stopping…'] });
-    expect(await page.browser.evaluate(`document.querySelector('.setup-actions .secondary').getAttribute('aria-busy')`)).toBe('true');
-    seen.import = await page.browser.evaluate('window.measure()');
-
-    // The stopped run takes the page back to Finish Setup, which says how far it got and what was on its way. The sample
-    // sends whole batches, as the worker does (HISTORY_IMPORT_BATCH), so a Stop finds 0 or 100 of 128 sent.
-    await page.atStep('finish-setup');
-    const stopped = await stoppedText();
-    expect(stopped).toContain('You stopped the import.');
-    const sent = Number(/(\d+) of 128 memories were sent before you stopped\./.exec(stopped)?.[1]);
-    expect([0, HISTORY_IMPORT_BATCH]).toContain(sent);
-    const onItsWay = Math.min(HISTORY_IMPORT_BATCH, 128 - sent);
-    expect(stopped).toContain(`${onItsWay} more were on their way when you stopped. cmem.ai may have saved some of them.`);
-    expect(stopped).toContain('Nothing was deleted on this computer or in your account. Importing again skips memories already there.');
-    expect(await page.browser.evaluate('window.alerts()')).toEqual([]);
-    seen['finish-setup stopped'] = await page.browser.evaluate('window.measure()');
-
-    // Nothing starts it again by itself: 2s is longer than the sample's answer delay and its batch time.
-    await Bun.sleep(2_000);
-    expect(await page.step()).toBe('finish-setup');
-    expect(await stoppedText()).toBe(stopped);
-    // Continue is the person's choice: the offer waits for its tick box, then runs to the end.
-    expect(await page.browser.evaluate(`document.querySelector('.history-actions .import-button').getAttribute('aria-disabled')`)).toBe('true');
-    await startImport();
-    await page.atStep('finish-setup');
-    // The new run sends all 128 again; the sample's cmem.ai kept the batch that was on its way, so the run gets those
-    // back as skipped and adds the rest, the numbers the worker gives (history-import-stop.test.ts, the batch saved).
-    const already = sent + onItsWay;
-    expect(await page.browser.evaluate(`[...document.querySelectorAll('.history-done p')].map((line) => line.innerText)`))
-      .toEqual([`This import added ${128 - already} of 128 memories to your CMEM account · Ready to search.`, `The other ${already} were already there, or cmem.ai couldn’t read them.`]);
-  });
-
-  for (const [label, result] of Object.entries(seen)) {
-    expect(result.step, label).toBe(label.split(' ')[0]);
-    expect(result.coarse, label).toBe(true);
-    expect(result.barSteps, label).toBe(5);
-    expect(result.back, label).toBe(1);
-    expect(result.navy.length, label).toBeLessThanOrEqual(1);
-    expect(result.short, label).toEqual([]);
-    expect(result.small, label).toEqual([]);
-  }
-  expect(Object.keys(seen)).toEqual(['import', 'finish-setup stopped']);
-// About 25s: the 8s scan, a stop, a 2s wait and a full 3.6s import; 90s allows a slow shared runner.
-}, 90_000);
-
 (chromeExecutablePath ? it : it.skip)('the launch hands over to the workspace when it did before Phase 8, and plays once', async () => {
   await withSetupPage('', { width: 1440, height: 900, phone: false }, async (page) => {
     const animations = () => page.browser.evaluate('window.launchAnimations()');
@@ -683,73 +576,38 @@ async function toFinishSetup(page: SetupWalk) {
   });
 }, 60_000);
 
-(chromeExecutablePath ? it : it.skip)('after a reload during a run, Finish Setup stops it without the tick box, and a reconnect starts nothing again', async () => {
-  // As the page finds it after a reload: the first batch answered, the second on its way.
-  const worker = fakeWorker(uploadRun({ sent: 100, imported: 100, percent: 78 }));
-  await withSetupPage('', { width: 1440, height: 900, phone: false }, async (page) => {
-    await toFinishSetupOnTheWorker(page);
-    expect(await page.browser.evaluate(`document.querySelector('.history-running')?.innerText ?? null`)).toContain('An import is already running.');
-    // Stop is on beside that line, while the tick box below it, which is for a start, is still empty.
-    expect(await page.browser.evaluate(`document.querySelector('.history-permission input').checked`)).toBe(false);
-    expect(await page.browser.evaluate(`document.querySelector('.history-running button').getAttribute('aria-disabled')`)).toBeNull();
-    await page.press('.history-running button', 'Stop import');
-    await page.until(`!!document.querySelector('.history-stopped')`, 'the stopped notice');
-    expect(await page.step()).toBe('finish-setup');
-    const stopped = await page.browser.evaluate(`document.querySelector('.history-stopped').innerText`);
-    expect(stopped).toContain('100 of 128 memories were sent before you stopped.');
-    expect(stopped).toContain('28 more were on their way when you stopped. cmem.ai may have saved some of them.');
-    expect(worker.posts()).toEqual(['/api/setup/choice', '/api/setup/import/stop']);
+(chromeExecutablePath ? it : it.skip)('an already-configured machine answers the storage choice itself, once, and a reconnect starts nothing again', async () => {
+  // The fake worker's default state: a machine with a working configuration, no saved choice yet.
+  const worker = fakeWorker();
+  await withSetupPage('', { width: 1440, height: 900, phone: false }, async page => {
+    await page.atStep('reveal');
+    await page.press('.setup-actions .primary', 'Continue');
+    // No choice form for this machine: the page sends the kept-existing answer itself while the interstitial stands
+    // in for the choice screen, and lands on Finish Setup. The applied report names the kept-existing stage.
+    await page.atStep('finish-setup');
+    expect(worker.choices()).toEqual([{ branch: 'home', memoryBilling: 'existing' }]);
+    expect(worker.posts()).toEqual(['/api/setup/choice']);
+    expect(worker.state().installer).toEqual({ stage: 'home-kept-existing' });
+    // The kept answer is attributed like a pressed one, exactly once.
+    const deadline = Date.now() + 10_000;
+    while (!worker.telemetry().some((event) => event.action === 'choice_committed')) {
+      if (Date.now() > deadline) throw new Error('The kept-choice telemetry did not arrive');
+      await Bun.sleep(50);
+    }
+    expect(worker.telemetry().filter((event) => event.action === 'choice_committed')).toHaveLength(1);
 
-    // The event stream drops. The page's EventSource opens a new one, whose first words are the stopped run (the worker
-    // says where setup stands on every connect); then a restarted worker, with no run at all.
+    // The event stream drops. The page's EventSource opens a new one, whose first words are the applied state (the
+    // worker says where setup stands on every connect). The page answers nothing again.
     const connected = worker.connections();
     worker.drop();
-    const deadline = Date.now() + 10_000;
+    const reconnectDeadline = Date.now() + 10_000;
     while (worker.connections() === connected) {
-      if (Date.now() > deadline) throw new Error('The page did not reconnect its event stream');
+      if (Date.now() > reconnectDeadline) throw new Error('The page did not reconnect its event stream');
       await Bun.sleep(50);
     }
-    await Bun.sleep(300);
-    worker.setRun(uploadRun({ state: 'idle', total: 0, startedAt: null }));
-    worker.send('setup-state', worker.state());
-    // Nothing starts the upload again: 2s is ten times the stream's 200ms retry.
     await Bun.sleep(2_000);
-    expect(worker.posts()).toEqual(['/api/setup/choice', '/api/setup/import/stop']);
     expect(await page.step()).toBe('finish-setup');
+    expect(worker.choices()).toHaveLength(1);
   }, worker);
-// About 8s: no scan to wait for, a reconnect and a 2s wait; 60s allows a slow shared runner.
-}, 60_000);
-
-(chromeExecutablePath ? it : it.skip)('Add saved memories on a run already running shows it and counts no start; after Stop, Continue says what it added and what was already there', async () => {
-  const worker = fakeWorker(uploadRun({ sent: 100, imported: 100, percent: 78 }));
-  await withSetupPage('', { width: 390, height: 844, phone: true }, async (page) => {
-    const importFullHistory = async () => {
-      await page.press('.history-permission input');
-      await page.press('.history-actions .import-button', 'Add saved memories');
-      await page.atStep('import');
-    };
-    await toFinishSetupOnTheWorker(page);
-    await importFullHistory();
-    // The worker answered with the run it has: its progress, and Stop.
-    expect(await page.browser.evaluate(`document.querySelector('.import-count')?.innerText`)).toBe('100 of 128');
-    await page.press('.setup-actions .secondary', 'Stop import');
-    await page.atStep('finish-setup');
-    await page.until(`!!document.querySelector('.history-stopped')`, 'the stopped notice');
-    // The person's Continue: the worker sends all 128 again and cmem.ai skips the 100 it has.
-    await importFullHistory();
-    await page.atStep('finish-setup');
-    expect(await page.browser.evaluate(`[...document.querySelectorAll('.history-done p')].map((line) => line.innerText)`))
-      .toEqual(['This import added 28 of 128 memories to your CMEM account · Ready to search.', 'The other 100 were already there, or cmem.ai couldn’t read them.']);
-    expect(worker.posts()).toEqual(['/api/setup/choice', '/api/setup/import', '/api/setup/import/stop', '/api/setup/import']);
-    // Telemetry goes out one event after another; once the third Finish Setup visit is in, so is every action before it.
-    const deadline = Date.now() + 10_000;
-    while (worker.telemetry().filter((event) => event.event === 'setup_step_viewed' && event.step === 'finish-setup').length < 3) {
-      if (Date.now() > deadline) throw new Error('The setup telemetry did not arrive');
-      await Bun.sleep(50);
-    }
-    // One start counted, for the Continue; the press on the run that was already running counted none.
-    expect(worker.telemetry().filter((event) => event.event === 'setup_step_action' && event.action === 'start_import'))
-      .toEqual([expect.objectContaining({ step: 'finish-setup' })]);
-  }, worker);
-// About 8s: no scan to wait for, two imports of under a second each; 60s allows a slow shared runner.
+// About 8s: no scan to wait for, one answer, a reconnect and a 2s wait; 60s allows a slow shared runner.
 }, 60_000);

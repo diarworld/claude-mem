@@ -2,7 +2,7 @@ import { afterAll, describe, expect, it } from 'bun:test';
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
-import { hasProConfiguration, readSetupState } from '../../src/shared/setup-state.js';
+import { hasExistingConfiguration, readSetupState } from '../../src/shared/setup-state.js';
 import { parseSetupEvent } from '../../src/shared/setup-funnel.js';
 import { isCmemGatewayUrl } from '../../src/shared/cmem-gateway.js';
 
@@ -59,30 +59,30 @@ describe('legacy setup state files', () => {
   });
 });
 
-describe('hasProConfiguration keeps any working openrouter observer or cloud sync', () => {
+describe('hasExistingConfiguration keeps any working openrouter observer or cloud sync', () => {
   it('accepts a non-empty base URL whatever endpoint it names, not only the cmem.ai gateway', () => {
     const gpuStack = {
       CLAUDE_MEM_PROVIDER: 'openrouter',
       CLAUDE_MEM_OPENROUTER_API_KEY: 'sk-or-local-1',
       CLAUDE_MEM_OPENROUTER_BASE_URL: 'http://gpustack.lan.local/v1',
     };
-    expect(hasProConfiguration(gpuStack)).toBe(true);
+    expect(hasExistingConfiguration(gpuStack)).toBe(true);
     expect(isCmemGatewayUrl(gpuStack.CLAUDE_MEM_OPENROUTER_BASE_URL)).toBe(false);
   });
   it('still accepts the cmem.ai gateway tuple', () => {
-    expect(hasProConfiguration({
+    expect(hasExistingConfiguration({
       CLAUDE_MEM_PROVIDER: 'openrouter',
       CLAUDE_MEM_OPENROUTER_API_KEY: 'sk-or-cmem-1',
       CLAUDE_MEM_OPENROUTER_BASE_URL: 'https://api.cmem.ai/v1',
     })).toBe(true);
   });
   it('requires a key with the base URL, and all three cloud sync settings together', () => {
-    expect(hasProConfiguration({ CLAUDE_MEM_PROVIDER: 'openrouter', CLAUDE_MEM_OPENROUTER_API_KEY: 'sk-or-1' })).toBe(false);
-    expect(hasProConfiguration({ CLAUDE_MEM_PROVIDER: 'openrouter', CLAUDE_MEM_OPENROUTER_BASE_URL: 'https://api.cmem.ai/v1' })).toBe(false);
-    expect(hasProConfiguration({
+    expect(hasExistingConfiguration({ CLAUDE_MEM_PROVIDER: 'openrouter', CLAUDE_MEM_OPENROUTER_API_KEY: 'sk-or-1' })).toBe(false);
+    expect(hasExistingConfiguration({ CLAUDE_MEM_PROVIDER: 'openrouter', CLAUDE_MEM_OPENROUTER_BASE_URL: 'https://api.cmem.ai/v1' })).toBe(false);
+    expect(hasExistingConfiguration({
       CLAUDE_MEM_CLOUD_SYNC_TOKEN: 't', CLAUDE_MEM_CLOUD_SYNC_USER_ID: 'u', CLAUDE_MEM_CLOUD_SYNC_HUB_URL: 'https://hub.cmem.ai',
     })).toBe(true);
-    expect(hasProConfiguration({ CLAUDE_MEM_CLOUD_SYNC_TOKEN: 't', CLAUDE_MEM_CLOUD_SYNC_USER_ID: 'u' })).toBe(false);
-    expect(hasProConfiguration({})).toBe(false);
+    expect(hasExistingConfiguration({ CLAUDE_MEM_CLOUD_SYNC_TOKEN: 't', CLAUDE_MEM_CLOUD_SYNC_USER_ID: 'u' })).toBe(false);
+    expect(hasExistingConfiguration({})).toBe(false);
   });
 });

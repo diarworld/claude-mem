@@ -433,6 +433,31 @@ describe('setup state endpoints', () => {
     expect((await post('/api/setup/choice', { branch: 'home', memoryBilling: 'existing' })).status).toBe(200);
   });
 
+  it('rewrites a legacy go choice cleanly: the home choice lands on disk without the retired checkout hand-off', async () => {
+    // A state file an older build left on an upgraded machine: the go choice with its offers, the checkout hand-off
+    // beside it, the installer still waiting. The page's home choice (sent by the person or by an already-configured
+    // machine) must replace the choice and rewrite the file without the dropped fields, so a finished setup never
+    // carries them (setup-state.ts reads leniently; this pins the write side).
+    writeFileSync(statePath, JSON.stringify({
+      status: 'pending',
+      choice: { branch: 'go', memoryBilling: 'existing', cloudSyncOffer: 'cloud_sync_annual', shareWorkView: true, chosenAt: '2026-01-01T00:00:00.000Z' },
+      installer: { stage: 'waiting-for-choice', error: null, updatedAt: '2026-01-01T00:00:00.000Z' },
+      checkout: { state: 'requested', requests: 1, error: null, updatedAt: '2026-01-01T00:00:00.000Z' },
+      tools: ['claude-code'],
+      completedAt: null,
+    }));
+    await start();
+    const answered = await post('/api/setup/choice', { branch: 'home', memoryBilling: 'existing' });
+    expect(answered.status).toBe(200);
+    const onDisk = JSON.parse(readFileSync(statePath, 'utf8'));
+    expect(onDisk.choice).toMatchObject({ branch: 'home', memoryBilling: 'existing' });
+    expect(onDisk.status).toBe('pending');
+    // The legacy fields are neither read nor written back: the saved file no longer carries them.
+    expect(onDisk.checkout).toBeUndefined();
+    expect(onDisk.choice.cloudSyncOffer).toBeUndefined();
+    expect(onDisk.choice.shareWorkView).toBeUndefined();
+  });
+
   it('record the choice, lock it once the installer applied it, and finish setup once', async () => {
     await start();
     expect((await post('/api/setup/complete', {})).status).toBe(409);

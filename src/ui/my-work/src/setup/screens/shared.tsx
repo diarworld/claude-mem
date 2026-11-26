@@ -76,12 +76,11 @@ export function SetupButton({ look = 'primary', className, type = 'button', ...p
 export const SETUP_WAITING_LINE_ID = 'setup-waiting-line'
 
 /**
- * Why a dimmed Back waits. Both stay true for as long as Back is dimmed: the scan moves on by itself when it finishes
- * and Back turns on if it stops, and the import screen shows only while the import runs.
+ * Why a dimmed Back waits. It stays true for as long as Back is dimmed: the scan moves on by itself when it finishes
+ * and Back turns on if it stops.
  */
 const BACK_WAIT_WORDS: Record<SetupBackWait, string> = {
   scan: 'Back waits while the scan runs.',
-  import: 'Back waits while the import runs.',
 }
 
 /** Back on a screen: where it goes, and what it waits for while it is dimmed. */

@@ -187,7 +187,7 @@ test('a stale log failure cannot overwrite a newer response after switching lang
 
 test('setup Copy URL words a copy as a copy (Copying…, Copied, Not copied), never as a save, in the reader’s language', async () => {
   const ui = await fixture('../src/ui/my-work/src/setup/screens/finish-setup-screen.tsx', 'FinishSetupScreen');
-  const props = { tools: [{ id: 'tool', name: 'Other', mark: 'terminal', kind: 'mcp', guide: { href: '#', label: 'Guide' } }], selected: ['tool'], history: null, importStatus: 'none', importResult: null };
+  const props = { tools: [{ id: 'tool', name: 'Other', mark: 'terminal', kind: 'mcp', guide: { href: '#', label: 'Guide' } }], selected: ['tool'] };
   const connection = find(ui.render(props), e => e.type?.name === 'Connection');
   const copyUrl = find(ui.render(connection.props, connection.type), e => e.type?.name === 'CopyUrl');
   // The SaveButton's words for its three states other than rest: the screen gives its own, so its defaults
@@ -209,7 +209,7 @@ test('setup Copy URL words a copy as a copy (Copying…, Copied, Not copied), ne
 for (const copied of [true, false]) {
   test(`setup clipboard ${copied ? 'success' : 'failure'} status switches languages`, async () => {
     const ui = await fixture('../src/ui/my-work/src/setup/screens/finish-setup-screen.tsx', 'FinishSetupScreen');
-    const props = { tools: [{ id: 'tool', name: 'Other', mark: 'terminal', kind: 'mcp', guide: { href: '#', label: 'Guide' } }], selected: ['tool'], history: null, importStatus: 'none', importResult: null };
+    const props = { tools: [{ id: 'tool', name: 'Other', mark: 'terminal', kind: 'mcp', guide: { href: '#', label: 'Guide' } }], selected: ['tool'] };
     const connection = find(ui.render(props), e => e.type?.name === 'Connection');
     const copyUrl = find(ui.render(connection.props, connection.type), e => e.type?.name === 'CopyUrl');
     const descriptor = Object.getOwnPropertyDescriptor(globalThis, 'navigator');

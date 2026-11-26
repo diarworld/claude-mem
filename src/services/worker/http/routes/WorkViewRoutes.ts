@@ -54,7 +54,7 @@ import type { SetupScan, SetupScanState } from '../../../prompt-import/setup-sca
 import { readHistoryCounts, type HistoryImport } from '../../../setup/history-import.js';
 import { createSetupTelemetry } from '../../../setup/telemetry.js';
 import { createSetupInstallerResumer } from '../../../setup/resume-installer.js';
-import { hasActiveSetupSession, hasProConfiguration, readSetupState, setupStatePath, writeSetupState, type SetupStateFile, type SetupStateView } from '../../../../shared/setup-state.js';
+import { hasActiveSetupSession, hasExistingConfiguration, readSetupState, setupStatePath, writeSetupState, type SetupStateFile, type SetupStateView } from '../../../../shared/setup-state.js';
 
 import { historyImportRunning, SETUP_BRANCHES, SETUP_INSTALLER_STAGES, SETUP_MEMORY_BILLINGS } from '../../../../shared/setup-funnel.js';
 import { hasPendingInstallSetup, SETUP_DSH_PROFILE_MAX_CHARACTERS, SETUP_INSTALL_NOTE_MAX_CHARACTERS, SETUP_INSTALL_STATUSES } from '../../../../shared/setup-install.js';
@@ -945,7 +945,7 @@ export class WorkViewRoutes extends BaseRouteHandler {
   private setupStateView(state: SetupStateFile = readSetupState(this.setupStatePath)): SetupStateView {
     const settings = SettingsDefaultsManager.loadFromFile(this.settingsPath, true, { readOnly: true }) as unknown as Record<string, unknown>;
     const historyImport = this.historyImport?.state() ?? null;
-    return { ...state, install: redactSetupInstall(state.install), alreadyPro: hasProConfiguration(settings), history: this.historyCounts(), historyImport, backgroundWorkRunning: this.backgroundWorkRunning({ countScanWaitingForUploadAnswer: true, failOnUnreadableRefresh: false }) };
+    return { ...state, install: redactSetupInstall(state.install), alreadyPro: hasExistingConfiguration(settings), history: this.historyCounts(), historyImport, backgroundWorkRunning: this.backgroundWorkRunning({ countScanWaitingForUploadAnswer: true, failOnUnreadableRefresh: false }) };
   }
 
   /**

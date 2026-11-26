@@ -16,7 +16,6 @@ const compiled = buildSync({
       import { RevealScreen } from './src/setup/screens/reveal-screen';
       import { ChoiceScreen } from './src/setup/screens/choice-screen';
       import { FinishSetupScreen } from './src/setup/screens/finish-setup-screen';
-      import { ImportScreen } from './src/setup/screens/import-screen';
       import { LaunchScreen } from './src/setup/screens/launch-screen';
       import { WorkspaceScreen } from './src/setup/screens/workspace-screen';
       import { ToolMark } from './src/setup/screens/shared';
@@ -24,10 +23,6 @@ const compiled = buildSync({
       import { SAMPLE_FOCUS_AREAS } from './src/data-goals';
       export { initialFlowState, SETUP_STEPS, SETUP_PROGRESS_STEPS, SETUP_PROGRESS_STATES, PROGRESS_STEP_WORDS, PROGRESS_STEP_OF_SCREEN, SCAN_PHASE_RUNNING } from './src/setup/setup-flow';
       export { SAMPLE_REQUESTS, SAMPLE_FOCUS_AREAS };
-      export { HISTORY_IMPORT_RUN_STATES } from '../../shared/setup-funnel';
-      export const renderImport = (progress, stopping = false) => renderToStaticMarkup(<ImportScreen progress={progress} back={{ onBack: noop, waitsFor: 'import' }} stopping={stopping} onStop={noop} />);
-      const history = { projects: 3, sessions: 24, observations: 128 };
-      export const renderHistoryPanel = (importResult, importStatus = 'available', stoppingImport = false) => renderToStaticMarkup(<FinishSetupScreen tools={[]} selected={[]} onSelect={noop} history={history} importStatus={importStatus} importResult={importResult} stoppingImport={stoppingImport} onImport={noop} onStopImport={noop} back={null} onContinue={noop} />);
       export const renderBar = (step, flow) => renderToStaticMarkup(<SetupStepBar step={step} flow={flow} />);
       export const renderMark = (id, name) => renderToStaticMarkup(<ToolMark id={id} name={name} />);
       const noop = () => {};
@@ -43,8 +38,7 @@ const compiled = buildSync({
         scan: renderToStaticMarkup(<ScanScreen scan={scan(scanPhase)} back={back} onImproveProductChange={noop} onConfirmUpload={noop} preferenceError={null} onRetry={noop} retrying={false} retryError={null} onSkip={noop} onContinue={noop} />),
         reveal: renderToStaticMarkup(<RevealScreen agents={[]} reveal={{ goals: [], work: [], rules: [], focusAreas: SAMPLE_FOCUS_AREAS, requests: SAMPLE_REQUESTS }} extraction={{ state: 'ok', step: null }} uploadedAgents={['codex']} recentPrompts={[]} back={back} onContinue={noop} />),
         choice: renderToStaticMarkup(<ChoiceScreen branch="home" back={back} onChoose={noop} />),
-        'finish-setup': renderToStaticMarkup(<FinishSetupScreen tools={[tool]} selected={['chatgpt']} onSelect={noop} history={null} importStatus="none" importResult={null} stoppingImport={false} onImport={noop} onStopImport={noop} back={back} onContinue={noop} />),
-        import: renderToStaticMarkup(<ImportScreen progress={{ state: 'running', percent: 48, imported: 61, error: null, sent: 61, total: 128 }} back={back} stopping={false} onStop={noop} />),
+        'finish-setup': renderToStaticMarkup(<FinishSetupScreen tools={[tool]} selected={['chatgpt']} onSelect={noop} back={back} onContinue={noop} />),
         launch: renderToStaticMarkup(<LaunchScreen tools={[tool]} back={back} onDone={noop} />),
         workspace: renderToStaticMarkup(<WorkspaceScreen suggestions={[]} back={back} search={async () => []} keepNote={async () => 1} forgetNote={async () => {}} onContinue={noop} />),
       });
@@ -120,17 +114,12 @@ describe('setup bottom row Back', () => {
     for (const step of Object.keys(screens)) expect(backButton(screens[step]), step).toBeNull();
   });
 
-  it('waits, with its reason beside it, while the scan or the import runs', () => {
+  it('waits, with its reason beside it, while the scan runs', () => {
     const scanning = app.renderScreens({ ...back, waitsFor: 'scan' }).scan;
     const button = backButton(scanning)!;
     expect(button).toContain('aria-disabled="true"');
     expect(button).toContain('aria-describedby="setup-waiting-line"');
     expect(scanning).toContain('<p id="setup-waiting-line" class="setup-waiting">Back waits while the scan runs.</p>');
-    const importing = app.renderScreens({ ...back, waitsFor: 'import' }).import;
-    expect(backButton(importing)).toContain('aria-disabled="true"');
-    expect(importing).toContain('<p id="setup-waiting-line" class="setup-waiting">Back waits while the import runs.</p>');
-    // The import says how far it is when the worker reports it.
-    expect(importing).toContain('61 of 128');
   });
 
   it('keeps one navy button per screen', () => {
@@ -246,109 +235,3 @@ describe('setup tool marks', () => {
   });
 });
 
-describe('setup import Stop (E9)', () => {
-  const running = { state: 'running', percent: 48, imported: 61, error: null, sent: 61, total: 128 };
-  const buttons = (html: string) => html.match(/<button[^>]*>[\s\S]*?<\/button>/g) ?? [];
-  const stopButton = (html: string) => buttons(html).find(button => button.replace(/<[^>]+>/g, '').includes('Stop'));
-  const panel = (html: string) => html.match(/<section class="panel is-memory history-panel"[\s\S]*?<\/section>/)?.[0] ?? '';
-
-  it('offers "Stop import" while the upload runs: outlined, in the bottom row, with Back waiting beside it', () => {
-    const html = app.renderImport(running);
-    const stop = stopButton(html)!;
-    expect(stop).toContain('>Stop import</button>');
-    expect(stop).toMatch(/class="[^"]*\bsecondary\b/);
-    expect(stop).toContain('data-activity="ready"');
-    expect(stop).not.toContain('aria-busy="true"');
-    expect(html.indexOf(stop)).toBeGreaterThan(html.indexOf('setup-actions-forward'));
-    // Stopping is not the way forward: the screen keeps no navy button.
-    expect(navyButtons(html)).toEqual([]);
-    expect(html).toContain('<p id="setup-waiting-line" class="setup-waiting">Back waits while the import runs.</p>');
-  });
-
-  it('says it is stopping while the Stop is on its way, and takes no second press', () => {
-    const stop = stopButton(app.renderImport(running, true))!;
-    expect(stop).toContain('aria-busy="true"');
-    expect(stop).toContain('data-slot="button-spinner"');
-    expect(stop.replace(/<[^>]+>/g, '')).toBe('Stopping…');
-  });
-
-  it('shows on Finish Setup how far the stopped run got, what was on its way, and that nothing was deleted', () => {
-    const stopped = panel(app.renderHistoryPanel({ ...running, state: 'stopped', sent: 51, total: 128, unconfirmed: 77 }));
-    expect(stopped).toContain('You stopped the import.');
-    // "Sent" counts the memories cmem.ai skipped too (already there, or unreadable), so no line says they all arrived.
-    expect(stopped).toContain('51 of 128 memories were sent before you stopped.');
-    expect(stopped).not.toContain('reached');
-    expect(stopped).toContain('77 more were on their way when you stopped. cmem.ai may have saved some of them.');
-    expect(stopped).toContain('Nothing was deleted on this computer or in your account. Importing again skips memories already there.');
-    // Continue is the person's choice: the offer stays, behind its tick box.
-    expect(stopped).toContain('Add saved memories');
-    expect(stopped).toContain('Tick the box above to turn this on.');
-    // A stop the person chose is a status, not an error.
-    expect(stopped).toContain('role="status"');
-    expect(stopped).not.toContain('role="alert"');
-    expect(panel(app.renderHistoryPanel({ ...running, state: 'stopped', sent: 127, total: 128, unconfirmed: 1 })))
-      .toContain('1 more was on its way when you stopped. cmem.ai may have saved it.');
-    // Stopped between batches (or by an older worker): nothing unknown to report.
-    expect(panel(app.renderHistoryPanel({ ...running, state: 'stopped' }))).not.toContain('on its way');
-  });
-
-  it('says what a finished run added and what the others were, never calling a skipped memory added', () => {
-    const done = { state: 'done', percent: 100, error: null, sent: 128, total: 128 };
-    const added = (imported: number, sent: number) => `This import added ${imported} of ${sent} memories to your CMEM account · Ready to search.`;
-    // Continue after a Stop at 100 of 128 sent: the worker's numbers (history-import-stop.test.ts, the batch on its way
-    // never saved, then saved before the cancel). After the import screen, and after a reload once it finished.
-    for (const status of ['complete', 'available']) {
-      const receipt = panel(app.renderHistoryPanel({ ...done, imported: 28, skipped: 100 }, status));
-      expect(receipt, status).toContain(added(28, 128));
-      expect(receipt, status).toContain('The other 100 were already there, or cmem.ai couldn’t read them.');
-      expect(receipt, status).not.toContain('28 memories imported');
-    }
-    const allThere = panel(app.renderHistoryPanel({ ...done, imported: 0, skipped: 128 }, 'complete'));
-    expect(allThere).toContain(added(0, 128));
-    expect(allThere).toContain('The other 128 were already there, or cmem.ai couldn’t read them.');
-    expect(panel(app.renderHistoryPanel({ ...done, imported: 127, skipped: 1 }, 'complete'))).toContain('The other 1 was already there, or cmem.ai couldn’t read it.');
-    // Every memory new: one line, as before E9. A worker that sends no skipped count gets the same line.
-    for (const result of [{ ...done, imported: 128, skipped: 0 }, { ...done, imported: 128 }]) {
-      const plain = panel(app.renderHistoryPanel(result, 'complete'));
-      expect(plain).toContain('128 memories imported to your CMEM account · Ready to search.');
-      expect(plain).not.toContain('The other');
-    }
-  });
-
-  it('offers Stop import on Finish Setup for a run found running (after a reload), with no tick box in its way', () => {
-    const html = panel(app.renderHistoryPanel(running));
-    const line = html.match(/<div class="history-running">[\s\S]*?<\/button>/)?.[0] ?? '';
-    expect(line).toContain('An import is already running.');
-    const stop = stopButton(line)!;
-    expect(stop).toContain('>Stop import</button>');
-    expect(stop).toMatch(/class="[^"]*\bsecondary\b/);
-    // Attributes, not the class list's `aria-disabled:` styles.
-    expect(stop).not.toMatch(/\saria-disabled="/);
-    expect(stop).not.toMatch(/\saria-describedby="/);
-    // The tick box and its hint stay, for starting an import; Stop does not wait for them.
-    expect(html).toContain('Tick the box above to turn this on.');
-    // While its request is on its way it says so and takes no second press.
-    const busy = stopButton(panel(app.renderHistoryPanel(running, 'available', true)))!;
-    expect(busy).toContain('aria-busy="true"');
-    expect(busy.replace(/<[^>]+>/g, '')).toBe('Stopping…');
-  });
-
-  it('words a failed run as a failure, not as the person\'s own Stop', () => {
-    const failed = panel(app.renderHistoryPanel({ ...running, state: 'failed', error: 'cmem.ai refused the import (HTTP 503).' }));
-    expect(failed).toContain('The import couldn’t finish.');
-    expect(failed).toContain('role="alert"');
-    expect(failed).not.toMatch(/stop/i);
-  });
-
-  it('words every run state the page can show, from the one definition', () => {
-    const offerOnly = panel(app.renderHistoryPanel(null));
-    const states = app.HISTORY_IMPORT_RUN_STATES.filter((state: string) => state !== 'idle');
-    expect(states).toContain('stopped');
-    const words = states.map((state: string) => {
-      const html = panel(app.renderHistoryPanel({ ...running, state, error: state === 'failed' ? 'cmem.ai refused the import (HTTP 503).' : null }));
-      expect(html, state).not.toEqual(offerOnly);
-      return html;
-    });
-    expect(new Set(words).size).toBe(states.length);
-  });
-});

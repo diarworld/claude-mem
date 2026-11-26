@@ -1,13 +1,12 @@
 import { SETUP_TOOLS, type SetupTool } from './agent-connections'
 // What the funnel screens show. Every screen reads it through props; nothing here is made up.
-// The live source fills it from the worker (prompt scan, extraction, usage, setup state); `?source=sample` loads
+// The live source fills it from the worker (prompt scan, extraction, setup state); `?source=sample` loads
 // setup-sample.ts instead, and only then.
-import { toSetupUsage, type SetupScanUsage, type SetupUsage } from './setup-usage'
 import { choiceLocked } from './setup-flow'
 import { revealFromSnapshot, type SnapshotWithSetup, type WorkerExtraction } from './setup-reveal'
 import { noteFor, searchUrl, toMemoryResults, type MemoryResult, type WorkerSearchResult } from './setup-search'
 import { applySseFrame } from '../live/parse-sse-frame'
-import { HISTORY_IMPORT_RUN_STATES, INTENT_MAX_UPLOAD_BYTES, type HistoryImportRunState, type SetupBranch, type SetupEvent, type SetupMemoryBilling, type SetupScanPhase, type SetupStatus } from '../../../../shared/setup-funnel.ts'
+import { INTENT_MAX_UPLOAD_BYTES, type SetupBranch, type SetupEvent, type SetupMemoryBilling, type SetupScanPhase, type SetupStatus } from '../../../../shared/setup-funnel.ts'
 import { hasPendingInstallSetup, type SetupInstallSelection, type SetupInstallState } from '../../../../shared/setup-install.ts'
 
 /** Mirrors the worker's SetupScanState (src/services/prompt-import/setup-scan.ts), trimmed to what the screen shows. */
@@ -42,7 +41,6 @@ export interface SetupScanView {
 }
 /** The owner's newest typed prompts, quoted as typed (SetupScanState.recentPrompts). */
 export interface SetupRecentPrompt { agent: string; at: string; text: string }
-/** The worker's subsidized hosted setup extraction. */
 /** What the installer did with the choice. A failed handoff can be retried from the setup page. */
 export interface SetupInstallerView { stage: InstallerStage; error: string | null }
 export type SetupExtraction = Pick<WorkerExtraction, 'state' | 'step'>
@@ -50,23 +48,6 @@ export type SetupExtraction = Pick<WorkerExtraction, 'state' | 'step'>
 export type { RevealGoal, RevealRule, RevealSets, RevealWork } from './setup-reveal'
 import type { RevealSets } from './setup-reveal'
 import type { InstallerStage, SetupStep } from './setup-flow'
-
-export type { Persona, SetupScanUsage, SetupUsage, UsageCoverage } from './setup-usage'
-
-export interface SetupHistory { projects: number; sessions: number; observations: number }
-/**
- * The worker's history upload, from its first run on (`idle`, no run yet, is null). `state` is the worker's run state
- * (setup-funnel.ts, its one definition). `imported` counts observations cmem.ai wrote, the only count that says what
- * reached the account; `error` is why a failed run stopped. `sent` of `total` is how far the run is (rows cmem.ai
- * acknowledged: written, already there, or unreadable); a worker that does not report them leaves them out (plan G19),
- * and the screen then shows the percent alone. `skipped` is the acknowledged rows cmem.ai did not write: ones it
- * already had or could not read (its answer does not say which). `unconfirmed` is the batch that was on its way when
- * the person pressed Stop: cmem.ai may have saved some of it.
- */
-export interface HistoryImportProgress {
-  state: Exclude<HistoryImportRunState, 'idle'>; percent: number; imported: number; error: string | null
-  sent?: number; total?: number; skipped?: number; unconfirmed?: number
-}
 
 /**
  * Why something the page asked of the worker failed, as the page words it (plan G17): no answer arrived at all (the
@@ -102,7 +83,7 @@ export interface SetupData {
   connectionError: string | null
   /** Whether the connection error got no answer at all or a refusal; null with no error. */
   connectionErrorKind: SetupFailureKind | null
-  choice: (SetupChoice & { usage?: SetupUsage }) | null
+  choice: SetupChoice | null
   /** Undefined until the first state response; null for older/already configured installers. */
   install: SetupInstallState | null | undefined
   scan: SetupScanView
@@ -112,13 +93,9 @@ export interface SetupData {
   recentPrompts: SetupRecentPrompt[]
   /** `null` until an installer reports. */
   installer: SetupInstallerView | null
-  usage: SetupUsage | null
   alreadyPro: boolean
   /** Finish Setup tool ids found on this machine; they come pre-ticked. */
   detectedTools: string[]
-  /** claude-mem observation history that could be imported. `null` for new installs. */
-  history: SetupHistory | null
-  historyImport: HistoryImportProgress | null
   /** "What's next?" chips, from the person's own goals and open asks. */
   suggestions: string[]
 }
@@ -142,10 +119,6 @@ export interface SetupSource {
   choose(choice: SetupChoice): Promise<void>
   /** Finishes setup for this machine with the tools picked on Finish Setup; the terminal exits (POST /api/setup/complete). */
   complete(tools: string[], telemetry?: SetupEvent[]): Promise<void>
-  /** Uploads this machine's observations to the CMEM account (POST /api/setup/import). Only the person's press calls it. */
-  startHistoryImport(): Promise<void>
-  /** Ends the upload at once; what reached the account stays (POST /api/setup/import/stop). Only the person's Stop calls it. */
-  stopHistoryImport(): Promise<void>
   search(query: string): Promise<MemoryResult[]>
   /** Keep as note: saves `text` as a new memory (POST /api/memory/save) and answers its observation id. */
   keepNote(record: MemoryResult, text: string): Promise<number>
@@ -163,11 +136,8 @@ export const EMPTY_SETUP_DATA: SetupData = {
   extraction: null,
   recentPrompts: [],
   installer: null,
-  usage: null,
   alreadyPro: false,
   detectedTools: [],
-  history: null,
-  historyImport: null,
   suggestions: [],
 }
 
@@ -191,32 +161,14 @@ interface WorkerScanState extends Omit<SetupScanView, 'agents' | 'improveProduct
   improveProduct?: boolean
   /** An older worker sends no canRunSetup / cannotRunReason / uploadBytes. */
   agents: Array<Omit<SetupScanAgent, 'canRunSetup' | 'cannotRunReason' | 'uploadBytes'> & Partial<Pick<SetupScanAgent, 'canRunSetup' | 'cannotRunReason' | 'uploadBytes'>> & { fromMemory?: number; fromTranscripts?: number }>
-  /** The 30-day token usage the same pass sums, once the scan is done. */
-  usage?: SetupScanUsage | null
   recentPrompts?: SetupRecentPrompt[]
 }
-interface WorkerHistoryImport { state: HistoryImportRunState; percent: number; imported: number; error: string | null; sent?: number; total?: number; skipped?: number; unconfirmed?: number }
 interface WorkerSetupState {
   choice?: SetupData['choice']
   install?: SetupInstallState | null
   status: SetupStatus; alreadyPro: boolean
   installer?: SetupInstallerView | null
-  history?: SetupHistory | null; historyImport?: WorkerHistoryImport | null
 }
-const count = (value: unknown) => typeof value === 'number' && Number.isSafeInteger(value) && value >= 0 ? value : undefined
-/** Whether the worker's word is a run state this page knows (the list's one definition is setup-funnel.ts). */
-const knownRunState = (state: unknown): state is HistoryImportRunState => HISTORY_IMPORT_RUN_STATES.includes(state as HistoryImportRunState)
-const toHistoryImport = (run: WorkerHistoryImport | null | undefined): HistoryImportProgress | null =>
-  // No run yet, or a state this page cannot word (a newer worker's): nothing to show, and nothing called running.
-  !run || run.state === 'idle' || !knownRunState(run.state) ? null : {
-    state: run.state, percent: run.percent, imported: run.imported, error: run.state === 'failed' ? run.error : null,
-    // Older workers send neither; the screen shows "<sent> of <total>" only when both are real counts.
-    ...(count(run.sent) !== undefined && count(run.total) ? { sent: count(run.sent), total: count(run.total) } : {}),
-    // Finish Setup's receipt says what the skipped ones were only when the worker counted them.
-    ...(count(run.skipped) !== undefined ? { skipped: count(run.skipped) } : {}),
-    // Only a stopped run has a batch whose answer never came; 0 means there was none.
-    ...(run.state === 'stopped' && count(run.unconfirmed) ? { unconfirmed: count(run.unconfirmed) } : {}),
-  }
 
 async function workerJson<T>(url: string, init?: RequestInit): Promise<T> {
   let response: Response
@@ -258,34 +210,26 @@ let appliedImproveProduct: boolean | undefined
 let preferenceReady: Promise<void> = Promise.resolve()
 let retryLocalScan: (() => Promise<void>) | null = null
 let acknowledgeInstallConnection: (() => void) | null = null
-/** Sends an import start or stop and shows the worker's answer (set while the page is subscribed). */
-let sendImportRequest: ((url: string) => Promise<void>) | null = null
-const askImport = async (url: string) => { if (sendImportRequest) await sendImportRequest(url); else await postJson(url, {}) }
 
 /**
  * The local worker: the prompt scan (started here when it has not run, then followed on the work view's event
- * stream), the 30-day token usage that scan sums, the setup state, and the Reveal's sets from the work view snapshot. Search and import land in funnel
- * Phases 9-10; until then those parts stay empty.
+ * stream), the setup state, and the Reveal's sets from the work view snapshot.
  */
 export const localSetupSource: SetupSource = {
   kind: 'local',
   subscribe(onData) {
     let data = EMPTY_SETUP_DATA
-    let liveUsage: SetupUsage | null = null
     let closed = false
     let scanRevision = 0
     let stateRevision = 0
-    let importRevision = 0
     let ready!: () => void
     preferenceReady = new Promise<void>((resolve) => { ready = resolve })
     const publish = (changes: Partial<SetupData>) => { if (closed) return; data = { ...data, ...changes }; onData(data) }
     const applyScan = (scan: WorkerScanState) => {
       scanRevision++
       appliedImproveProduct = scan.improveProduct ?? true
-      liveUsage = scan.usage ? toSetupUsage(scan.usage) : null
       publish({
         scan: toScanView(scan),
-        usage: data.choice?.usage ?? liveUsage,
         recentPrompts: scan.recentPrompts ?? [],
         // Finish Setup pre-ticks the tools the scan found on this machine.
         detectedTools: scan.agents.filter((agent) => agent.detected).map((agent) => agent.id).filter((id) => SETUP_TOOLS.some((tool) => tool.id === id)),
@@ -297,23 +241,11 @@ export const localSetupSource: SetupSource = {
       connectionError: null,
       connectionErrorKind: null,
       choice: state.choice ?? null,
-      usage: state.choice?.usage ?? liveUsage,
       install: state.install ?? null,
       alreadyPro: state.alreadyPro,
       installer: state.installer ? { stage: state.installer.stage, error: state.installer.error } : null,
-      // Nothing to bring along on a new install: the import offer stays hidden.
-      history: state.history && state.history.observations > 0 ? state.history : null,
-      historyImport: toHistoryImport(state.historyImport),
       })
       void ensureScanStarted()
-    }
-    // The upload's own words, its `setup-import` frames and a request's answer, count, so an older answer never wins.
-    // The worker sends such a frame for every change, the one a request makes included, so dropping an answer that a
-    // frame overtook loses nothing. A `setup-state` frame does not count: it copies the upload as it was whenever the
-    // setup state was written, which can be before the request was sent, so a start's answer must not lose to it.
-    const applyImport = (run: WorkerHistoryImport | null | undefined) => {
-      importRevision++
-      publish({ historyImport: toHistoryImport(run) })
     }
     // Goals, work and rules land in the work view snapshot as the extraction saves each one.
     const applySnapshot = (snapshot: SnapshotWithSetup) => {
@@ -336,7 +268,6 @@ export const localSetupSource: SetupSource = {
     // applyScan reads scan.agents, so a scan frame without that list is skipped.
     stream.addEventListener('setup-scan', (event) => onFrame<WorkerScanState>(event, applyScan, (frame) => Array.isArray(frame.agents)))
     stream.addEventListener('setup-state', (event) => onFrame<WorkerSetupState>(event, applyState))
-    stream.addEventListener('setup-import', (event) => onFrame<WorkerHistoryImport>(event, applyImport))
     stream.addEventListener('work-view', (event) => onFrame<SnapshotWithSetup>(event, applySnapshot, (frame) =>
       Array.isArray(frame.humanRequests) && Array.isArray(frame.agents)
       && typeof (frame.source as { connected?: unknown } | null)?.connected === 'boolean'))
@@ -366,15 +297,6 @@ export const localSetupSource: SetupSource = {
     acknowledgeInstallConnection = acknowledgeConnection
     // Retrying may repeat hosted extraction, so only the page's explicit action invokes this.
     retryLocalScan = startScan
-    // The answer is the run as the worker held it when it took the request, so the page knows at once that the upload
-    // runs or stopped, whichever of the answer and the event stream arrives first. An upload frame after the request is
-    // at least as new (above).
-    const importRequest = async (url: string) => {
-      const revision = importRevision
-      const answer = await postJson<WorkerHistoryImport>(url, {})
-      if (!closed && importRevision === revision) applyImport(answer)
-    }
-    sendImportRequest = importRequest
     let requestedAtRevision = scanRevision
     const requestedStateRevision = stateRevision
     void (async () => {
@@ -409,7 +331,6 @@ export const localSetupSource: SetupSource = {
       closed = true
       if (retryLocalScan === startScan) retryLocalScan = null
       if (acknowledgeInstallConnection === acknowledgeConnection) acknowledgeInstallConnection = null
-      if (sendImportRequest === importRequest) sendImportRequest = null
       stream.close()
       ready()
     }
@@ -440,8 +361,6 @@ export const localSetupSource: SetupSource = {
   async confirmUpload(upload, agents, improveProduct) { await postJson('/api/setup/scan/consent', { upload, ...(agents ? { agents } : {}), ...(improveProduct === undefined ? {} : { improveProduct }) }) },
   async choose(choice) { await postJson('/api/setup/choice', choice) },
   async complete(tools, telemetry) { await postJson('/api/setup/complete', { tools, ...(telemetry?.length ? { telemetry } : {}) }) },
-  async startHistoryImport() { await askImport('/api/setup/import') },
-  async stopHistoryImport() { await askImport('/api/setup/import/stop') },
   async search(query) { return toMemoryResults(await workerJson<WorkerSearchResult>(searchUrl(query))) },
   async keepNote(record, text) {
     const saved = await postJson<{ success?: boolean; id?: unknown; reason?: unknown }>('/api/memory/save', noteFor(record, text))

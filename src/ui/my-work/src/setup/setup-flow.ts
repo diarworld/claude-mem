@@ -7,7 +7,6 @@ export { SETUP_STEPS, type SetupStep }
 export type MemoryBranch = SetupBranch
 /** Who generates memories: the person's existing provider. */
 export type MemoryBilling = SetupMemoryBilling
-export type HistoryImportStatus = 'none' | 'available' | 'running' | 'complete'
 
 export interface SetupFlowState {
   /** Agent integrations must finish installing before the memory scan begins. */
@@ -26,7 +25,7 @@ export interface SetupFlowState {
   scanReview: boolean
   branch: MemoryBranch
   memoryBilling: MemoryBilling
-  /** This machine already has a working configuration the funnel keeps (the skip-choice flow itself is Task 7). */
+  /** This machine already has a working configuration the funnel keeps (the page answers the choice for it). */
   alreadyPro: boolean
   /** The prompt scan finished without an error. */
   scanComplete: boolean
@@ -38,14 +37,13 @@ export interface SetupFlowState {
   revealContinued: boolean
   choiceContinued: boolean
   finishTools: string[]
-  importStatus: HistoryImportStatus
   setupComplete: boolean
 }
 
 export function initialFlowState(alreadyPro: boolean): SetupFlowState {
   return {
     installationComplete: true, installConfirmed: true, installReview: false, scanReview: false, branch: 'home', memoryBilling: 'existing', alreadyPro, scanComplete: false, scanSkipped: false,
-    revealContinued: false, choiceContinued: false, finishTools: [], importStatus: 'none', setupComplete: false,
+    revealContinued: false, choiceContinued: false, finishTools: [], setupComplete: false,
   }
 }
 
@@ -88,10 +86,9 @@ export function guardStep(step: SetupStep, state: SetupFlowState): SetupStep {
   if (step !== 'scan' && !scanPassed(state) && !state.choiceContinued) return 'scan'
   if (!BEFORE_CHOICE.includes(step) && !state.revealContinued) return 'reveal'
   if (![...BEFORE_CHOICE, 'choice'].includes(step) && !state.choiceContinued) return 'choice'
-  // 'checkout' and 'savings' remain wire steps (old telemetry still names them) with no screens left:
-  // the choice goes on to Finish Setup, so a request for either lands there.
-  if (step === 'checkout' || step === 'savings') return 'finish-setup'
-  if (step === 'import' && state.importStatus !== 'running') return 'finish-setup'
+  // 'checkout', 'savings' and 'import' remain wire steps (old telemetry still names them) with no screens left:
+  // the choice goes on to Finish Setup, so a request for any of them lands there.
+  if (step === 'checkout' || step === 'savings' || step === 'import') return 'finish-setup'
   if ((step === 'launch' || step === 'workspace') && (!state.setupComplete || state.finishTools.length === 0)) return 'finish-setup'
   return step
 }
@@ -188,16 +185,14 @@ export function scanRunning(phase: SetupScanPhase): boolean {
 }
 
 /**
- * What a dimmed Back waits for (plan Phase 8: "disabled with a reason while a scan or import runs"); null when Back
- * can be pressed. The screens word it.
+ * What a dimmed Back waits for (plan Phase 8: "disabled with a reason while a scan runs"); null when Back
+ * can be pressed. The screens word it. (The import screen went with the page-flow import UI; a Back that
+ * cannot be shown never waits.)
  */
-export type SetupBackWait = 'scan' | 'import'
+export type SetupBackWait = 'scan'
 
 export function backWaitsFor(step: SetupStep, scanPhase: SetupScanPhase): SetupBackWait | null {
   if (step === 'scan' && scanRunning(scanPhase)) return 'scan'
-  // The import screen shows only while the import runs (guardStep), and the page leaves it for Finish Setup by itself
-  // when the import ends, so Back waits for as long as this screen is up.
-  if (step === 'import') return 'import'
   return null
 }
 

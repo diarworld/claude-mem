@@ -4,7 +4,7 @@ export const CMEM_MCP_URL = 'https://cmem.ai/api/mcp'
 export interface SetupTool {
   id: string
   name: string
-  /** Local tools capture work on this machine; cloud readers only exist with On The Go. */
+  /** Local tools capture work on this machine; cloud readers reach the memory through the account's MCP endpoint. */
   kind: 'local' | 'cloud'
   /** Already configured by the install step; shown as connected in Finish Setup. */
   installed?: boolean

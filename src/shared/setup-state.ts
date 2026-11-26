@@ -5,7 +5,6 @@ import { dirname, join } from 'node:path';
 import { resolveDataDir } from './paths.js';
 import { randomUUID } from 'node:crypto';
 import type { SetupInstallState } from './setup-install.js';
-import type { SetupUsage } from './setup-usage.js';
 import {
   isSetupId, type SetupBranch, type SetupInstallerStage, type SetupMemoryBilling,
   type SetupStatus, type SetupTelemetryContext,
@@ -18,8 +17,6 @@ export interface SetupChoice {
   branch: SetupBranch;
   memoryBilling: SetupMemoryBilling;
   chosenAt: string;
-  /** Original scan summary for the post-checkout usage screen, retained across worker restarts. */
-  usage?: SetupUsage;
 }
 export interface SetupInstallerReport { stage: SetupInstallerStage; error: string | null; updatedAt: string }
 
@@ -36,7 +33,8 @@ export interface SetupStateFile {
 
 /** What GET /api/setup/state answers: the file plus what the page needs to pre-select. */
 export interface SetupStateView extends SetupStateFile {
-  /** This machine already has a CMEM Pro configuration: On The Go is pre-selected and checkout is skipped. */
+  /** This machine already has a working configuration the funnel keeps: no choice screen — the page answers the
+   * waiting installer itself, and a choice it already applied reports the `home-kept-existing` stage. */
   alreadyPro: boolean;
   /** This machine's own observation history (Finish Setup's import offer); null when the worker cannot read it. */
   history?: { projects: number; sessions: number; observations: number } | null;
@@ -144,9 +142,10 @@ const filled = (value: unknown): boolean => typeof value === 'string' && value.t
 /**
  * An existing configuration the funnel must keep: any openrouter observer that holds a key against a non-empty
  * base URL — the cmem.ai gateway or any other OpenRouter-compatible endpoint (a self-hosted GPUStack, for example) —
- * or a configured cloud sync connection.
+ * or a configured cloud sync connection. The name says "existing", not "Pro": the kept configuration is any working
+ * provider, not a paid plan. The `already_pro` wire/session fields keep their closed names.
  */
-export function hasProConfiguration(settings: Record<string, unknown>): boolean {
+export function hasExistingConfiguration(settings: Record<string, unknown>): boolean {
   const proObserver = settings.CLAUDE_MEM_PROVIDER === 'openrouter'
     && filled(settings.CLAUDE_MEM_OPENROUTER_API_KEY)
     && filled(settings.CLAUDE_MEM_OPENROUTER_BASE_URL);

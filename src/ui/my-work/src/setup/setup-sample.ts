@@ -1,36 +1,24 @@
 // Review fixtures for the funnel screens. Loaded only by a dynamic import when the page has `?source=sample`;
 // nothing else imports this file. Invented work for a made-up person; no real prompts, usage or history.
-// `&sample=new` shows a new install (no claude-mem history: no efficiency percent, no import step).
+// `&sample=new` shows a new install.
 // `&scan=<percent>` holds the scan at that percent, for screenshots.
-// `&usage=partial|none` shows an incomplete or missing usage history (default: a complete 30-day window).
 // `&scan=consent|failed` stops the scan at the upload question or at a failure (each retry or answer then goes on).
-// `&fail=install|import|installer|choice|stop` makes that hand-off fail once, so its error can be seen; the retry
-// works. `choice` is the worker refusing the storage choice and `stop` is Stop import getting no answer (hand-off alerts);
-// `import` is cmem.ai refusing the run's last batch; the others are reports from the installer.
+// `&fail=install|installer|choice` makes that hand-off fail once, so its error can be seen; the retry works.
+// `choice` is the worker refusing the storage choice; the others are reports from the installer.
 // `&installer=on` plays the installer applying the storage choice, as the terminal does, so the choice locks after it.
-// `&import=running` plays a page reloaded while an import runs: the worker already reports one running, held after its
-// first batch until the person stops it, for screenshots of Finish Setup's "An import is already running.".
-import { SetupRequestError, type HistoryImportProgress, type MemoryResult, type SetupData, type SetupSource } from './setup-data'
+import { SetupRequestError, type MemoryResult, type SetupData, type SetupSource } from './setup-data'
 import type { InstallerStage } from './setup-flow'
-import { toSetupUsage, type SetupScanUsage } from './setup-usage'
 import { SAMPLE_REQUESTS } from '../data'
 import { SAMPLE_FOCUS_AREAS } from '../data-goals'
-import { HISTORY_IMPORT_BATCH, historyImportRunning } from '../../../../shared/setup-funnel.ts'
 
 const SCAN_MS = 8000
 /**
- * How long the sample takes to answer an install, a scan retry or a Stop import: a real one waits for the worker, so
- * "Starting again…" (and the dimmed "Skip the scan" beside it), "Installing…" and "Stopping…" can be seen and checked.
+ * How long the sample takes to answer an install or a scan retry: a real one waits for the worker, so
+ * "Starting again…" (and the dimmed "Skip the scan" beside it) and "Installing…" can be seen and checked.
  * Sample only.
  */
 const ANSWER_MS = 1200
 const REVEAL_GAP_MS = 900
-/**
- * How long a whole sample import runs, shared evenly by its batches (two for the sample's 128 memories, 1.8 s each):
- * long enough to see the import screen and press Stop while the first batch is on its way, short enough for the
- * browser walks. Sample only.
- */
-const IMPORT_MS = 3600
 const TICK_MS = 160
 
 const AGENTS = [
@@ -61,35 +49,20 @@ const RECORDS: MemoryResult[] = [
   { id: 'm3', title: 'Feed stutter traced to image decoding', body: 'Large thumbnails were decoded on the main thread. Moving decoding off the main thread brought scrolling back to 60 fps on the test phone.', project: 'Mobile app', agent: 'Gemini CLI', session: 'Feed performance', date: '2026-10-14' },
 ]
 
-export type SampleUsage = 'complete' | 'partial' | 'none'
 /** Where `&scan=` stops the sample scan instead of finishing it. */
 export type SampleScanStop = 'consent' | 'failed'
 /** Which hand-off `&fail=` makes fail once. */
-export type SampleFailure = 'install' | 'import' | 'installer' | 'choice' | 'stop'
+export type SampleFailure = 'install' | 'installer' | 'choice'
 /** Invented failure words for the sample, shaped like the worker's own. */
 const SAMPLE_FAILURE_WORDS: Record<SampleFailure | 'scan', string> = {
   scan: 'Hosted setup failed (HTTP 503): The anonymous daily budget has been reached.',
   install: 'Cursor configuration could not be saved.',
-  import: 'cmem.ai refused the import (HTTP 503).',
   installer: 'The setup program stopped (exit 1). Retry setup in this page, or run npx claude-mem install --setup browser.',
   choice: 'The installer is not waiting for a storage choice yet.',
-  // The browser's words when no answer came (a worker that is restarting): the one way a Stop fails while the import runs.
-  stop: 'Failed to fetch',
 }
-/** The worker's answer to a Stop that comes after the import ended (WorkViewRoutes.ts stopHistoryImport). */
-const NOTHING_TO_STOP = 'No import is running, so there is nothing to stop.'
 
 /** What the sample installer reports once it has applied a storage choice (the stages the real one reports). */
 const appliedStage = (): InstallerStage => 'home-ready'
-
-function sampleUsage(kind: SampleUsage, newInstall: boolean): SetupScanUsage {
-  const agents = [
-    { id: 'claude-code', label: 'Claude Code', detected: true, recordsTokens: true, tokens: kind === 'none' ? 0 : 61_200_000 },
-    { id: 'codex', label: 'Codex', detected: true, recordsTokens: true, tokens: kind === 'none' ? 0 : 23_400_000 },
-  ]
-  const totalTokens = agents.reduce((sum, agent) => sum + agent.tokens, 0)
-  return { windowDays: 30, agents, totalTokens, coverage: kind, persona: kind === 'complete' ? 'Heavy AI User' : null, efficiencyPercent: newInstall ? null : 50 }
-}
 
 /** Invented prompts for the waiting-for-agent Reveal (`&agent=none`). */
 const RECENT_PROMPTS = [
@@ -98,7 +71,7 @@ const RECENT_PROMPTS = [
   { agent: 'claude-code', at: '2026-10-14T09:30:00.000Z', text: 'the mobile list is slow on my old phone, find out why' },
 ]
 
-function sampleData(newInstall: boolean, usage: SampleUsage, waitingForAgent: boolean, fail: SampleFailure | undefined, installer: boolean): SetupData {
+function sampleData(newInstall: boolean, waitingForAgent: boolean, fail: SampleFailure | undefined, installer: boolean): SetupData {
   return {
     connectionError: null,
     connectionErrorKind: null,
@@ -129,11 +102,8 @@ function sampleData(newInstall: boolean, usage: SampleUsage, waitingForAgent: bo
     extraction: waitingForAgent ? { state: 'waiting-for-agent', step: null } : null,
     recentPrompts: RECENT_PROMPTS,
     installer: fail === 'installer' ? { stage: 'failed', error: SAMPLE_FAILURE_WORDS.installer } : installer ? { stage: 'waiting-for-choice', error: null } : null,
-    usage: toSetupUsage(sampleUsage(usage, newInstall)),
     alreadyPro: false,
     detectedTools: ['claude-code', 'codex', 'chatgpt'],
-    history: newInstall ? null : { projects: 3, sessions: 24, observations: 128 },
-    historyImport: null,
     suggestions: GOALS!.map((goal) => goal.title),
   }
 }
@@ -145,28 +115,11 @@ function sampleData(newInstall: boolean, usage: SampleUsage, waitingForAgent: bo
 const SAMPLE_FAIL_AT_PERCENT = 40
 
 /** Plays the scan, then lands Goals, Work and Rules one after another, as the live screen will. */
-export function createSampleSetupSource(newInstall: boolean, holdScanAtPercent: number | null, usage: SampleUsage = 'complete', waitingForAgent = false,
-  { scanStop, fail, installer = false, importRunning = false }: { scanStop?: SampleScanStop; fail?: SampleFailure; installer?: boolean; importRunning?: boolean } = {}): SetupSource {
-  let data = sampleData(newInstall, usage, waitingForAgent, fail, installer)
+export function createSampleSetupSource(newInstall: boolean, holdScanAtPercent: number | null, waitingForAgent = false,
+  { scanStop, fail, installer = false }: { scanStop?: SampleScanStop; fail?: SampleFailure; installer?: boolean } = {}): SetupSource {
+  let data = sampleData(newInstall, waitingForAgent, fail, installer)
   const listeners = new Set<(data: SetupData) => void>()
   const publish = (changes: Partial<SetupData>) => { data = { ...data, ...changes }; for (const listener of listeners) listener(data) }
-  // The history upload, played the way the worker reports it (history-import.ts): whole batches of HISTORY_IMPORT_BATCH,
-  // `sent` counting every memory cmem.ai answered for and `skipped` the ones it already had.
-  const historyTotal = data.history?.observations ?? 0
-  /** The batch the upload sends next: a full one, or what is left. */
-  const nextBatch = (sent: number) => Math.min(HISTORY_IMPORT_BATCH, historyTotal - sent)
-  /** The worker's percent while it runs: from what was answered for, held under 100 until the run is done. */
-  const runningPercent = (sent: number) => historyTotal ? Math.min(99, Math.floor((sent / historyTotal) * 100)) : 99
-  // The sample's cmem.ai account: how many of the sample's memories it has, counted from the first, since the upload
-  // sends them in order. A later run gets the ones already there back as skipped, as the worker does from cmem.ai.
-  let inAccount = 0
-  let importTimer: ReturnType<typeof setTimeout> | undefined
-  if (importRunning && historyTotal) {
-    // As a reload finds it: the first batch answered (cmem.ai wrote it) and the next one on its way, held there.
-    const sent = nextBatch(0)
-    inAccount = sent
-    data = { ...data, historyImport: { state: 'running', percent: runningPercent(sent), imported: sent, skipped: 0, sent, total: historyTotal, error: null } }
-  }
   // Each `&fail=` hand-off fails the first time only, so the retry can be seen working.
   const failing = new Set<SampleFailure>(fail ? [fail] : [])
   const failsOnce = (kind: SampleFailure) => failing.delete(kind)
@@ -241,48 +194,6 @@ export function createSampleSetupSource(newInstall: boolean, holdScanAtPercent: 
       publish({ choice, ...(installer ? { installer: { stage: appliedStage(), error: null } } : {}) })
     },
     async complete() {},
-    async startHistoryImport() {
-      // One run at a time, as the worker: a press while one runs (a reload found it) answers with that run.
-      if (data.historyImport && historyImportRunning(data.historyImport.state)) return
-      const failed = failsOnce('import')
-      const batchMs = IMPORT_MS / Math.max(1, Math.ceil(historyTotal / HISTORY_IMPORT_BATCH))
-      let run: HistoryImportProgress = { state: 'running', percent: 0, imported: 0, skipped: 0, sent: 0, total: historyTotal, error: null }
-      // Running from the press, as the worker answers the start, so the page opens the import screen on it.
-      publish({ historyImport: run })
-      const answerBatch = () => {
-        const sent = run.sent ?? 0
-        const rows = nextBatch(sent)
-        // `&fail=import`: cmem.ai refuses the run's last batch, so the failed run has sent part of the history.
-        if (failed && sent + rows === historyTotal) {
-          publish({ historyImport: { ...run, state: 'failed', error: SAMPLE_FAILURE_WORDS.import } })
-          return
-        }
-        // cmem.ai skips the memories it already has (the first `inAccount`) and writes the rest.
-        const skipped = Math.max(0, Math.min(inAccount, sent + rows) - sent)
-        const answered = sent + rows
-        inAccount = Math.max(inAccount, answered)
-        const done = answered === historyTotal
-        run = { ...run, state: done ? 'done' : 'running', sent: answered, imported: run.imported + rows - skipped, skipped: (run.skipped ?? 0) + skipped, percent: done ? 100 : runningPercent(answered) }
-        publish({ historyImport: run })
-        if (!done) importTimer = setTimeout(answerBatch, batchMs)
-      }
-      importTimer = setTimeout(answerBatch, batchMs)
-    },
-    // The worker takes a Stop the moment it arrives: the upload ends there, with what it sent and its batch on the way
-    // unconfirmed, and the answer comes back after a round trip (ANSWER_MS), so "Stopping…" can be seen. An import that
-    // already ended has nothing to stop, as the worker says. The sample's cmem.ai keeps the batch that was on its way (a
-    // real one may or may not have saved it before the cancel reached it), so a Continue gets it back as skipped.
-    async stopHistoryImport() {
-      const roundTrip = () => new Promise((resolve) => setTimeout(resolve, ANSWER_MS))
-      if (failsOnce('stop')) { await roundTrip(); throw new SetupRequestError('unreachable', SAMPLE_FAILURE_WORDS.stop) }
-      const run = data.historyImport
-      if (!run || !historyImportRunning(run.state)) { await roundTrip(); throw new SetupRequestError('refused', NOTHING_TO_STOP) }
-      clearTimeout(importTimer)
-      const onItsWay = nextBatch(run.sent ?? 0)
-      inAccount = Math.max(inAccount, (run.sent ?? 0) + onItsWay)
-      await roundTrip()
-      publish({ historyImport: { ...run, state: 'stopped', unconfirmed: onItsWay || undefined } })
-    },
     async keepNote() { return 0 },
     async forgetNote() {},
     async search(query) {

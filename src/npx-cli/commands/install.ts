@@ -47,7 +47,7 @@ import {
   buildAnthropicMaxLocalSettings,
   buildHostObserverSettings,
 } from '../cmem-memory-credentials.js';
-import { endSetupSession, hasProConfiguration, INITIAL_SETUP_STATE, readSetupState, startSetupSession, writeSetupState } from '../../shared/setup-state.js';
+import { endSetupSession, hasExistingConfiguration, INITIAL_SETUP_STATE, readSetupState, startSetupSession, writeSetupState } from '../../shared/setup-state.js';
 import { AGENT_BROWSER_SETUP_HINT, runBrowserSetup, settingsChangesNeedingRestart, shouldPrintAgentBrowserSetupHint, shouldUseBrowserSetup, waitForBackgroundWorkToFinish, type BrowserSetupOutcome } from '../install/browser-setup.js';
 
 function getSetting<K extends keyof SettingsDefaults>(key: K): SettingsDefaults[K] {
@@ -2496,7 +2496,7 @@ async function runInstallCommandInner(options: InstallOptions, summary: InstallS
   let browserOutcome: BrowserSetupOutcome | null = null;
   let settingsBeforeBrowserSetup: string | null = null;
   if (browserSetup) {
-    startSetupSession(undefined, hasProConfiguration(SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH, true, { readOnly: true }) as unknown as Record<string, unknown>));
+    startSetupSession(undefined, hasExistingConfiguration(SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH, true, { readOnly: true }) as unknown as Record<string, unknown>));
     const setupStateBeforeBrowser = readSetupState();
     try {
       // Mark this GUI setup before the worker's first refresh tick: its scan uses hosted extraction,
@@ -2561,10 +2561,16 @@ async function runInstallCommandInner(options: InstallOptions, summary: InstallS
               if (!installCatalog!.telemetryLocked) recordTelemetryDecision(selection.telemetryEnabled);
             },
           },
-          applyChoice: async (choice) => {
-            // Local-only funnel: every choice resolves to the local provider
-            // (logged-in Claude SDK account, no claude-mem login). The checkout
-            // branch and its pairing hand-off are gone.
+          applyChoice: async (choice, chosen) => {
+            // A machine with an existing configuration keeps it untouched (design 4a): no provider
+            // question is re-answered and nothing is written over it, and the funnel names that
+            // outcome `home-kept-existing` (the setup page and the summary read the stage). A fresh
+            // machine resolves to the local provider (logged-in Claude SDK account, no claude-mem
+            // login); the checkout branch and its pairing hand-off are gone.
+            if (chosen.alreadyPro) {
+              options.providerSource = 'persisted';
+              return 'home-kept-existing';
+            }
             options.provider = 'claude';
             options.providerSource = 'browser';
             browserProvider = await promptProvider(options);
@@ -2675,13 +2681,9 @@ async function runInstallCommandInner(options: InstallOptions, summary: InstallS
   const installStatus = options.update
     ? hasFailures ? 'Update Partial' : 'Update Complete'
     : hasFailures ? 'Installation Partial' : 'Installation Complete';
-  // No account step exists in this local-only build: an install either kept
-  // the machine's existing configuration or needed nothing beyond the local
-  // key prompts. (The funnel's `home-kept-existing` stage arrives with the
-  // home-only contract; until then any browser run maps to the kept case.)
-  const browserAccountStatus = browserOutcome
-    ? 'Kept existing configuration'
-    : null;
+  // No account step exists in this local-only build. The browser funnel's kept-existing
+  // run sets providerSource 'persisted' (applyChoice), so the mapping below already words
+  // both outcomes: 'Kept existing configuration', or the fresh local install's.
   // The provider this run ended up with: the default openrouter path sets it,
   // and a named provider wins, because host reports its transport (openrouter).
   const summaryProvider = options.provider ?? selectedProvider;
@@ -2693,7 +2695,7 @@ async function runInstallCommandInner(options: InstallOptions, summary: InstallS
     `Plugin dir:  ${styleText('cyan', marketplaceDir)}`,
     `Agents:      ${styleText('cyan', selectedIDEs.join(', '))}`,
   ];
-  summaryLines.push(`Account:     ${styleText('cyan', browserAccountStatus ?? accountStatus)}`);
+  summaryLines.push(`Account:     ${styleText('cyan', accountStatus)}`);
   summaryLines.push(`Cloud sync:  ${styleText('cyan', cloudSyncConfigured ? 'ON' : 'OFF (local)')}`);
   if (autoMemoryStatus === 'disabled') {
     summaryLines.push(`Auto-memory: ${styleText('cyan', 'disabled')} (CLAUDE_CODE_DISABLE_AUTO_MEMORY=1)`);

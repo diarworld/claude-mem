@@ -1,11 +1,10 @@
-import { ArrowRightIcon, CheckIcon, CopyIcon, ExternalLinkIcon, InfoIcon } from 'lucide-react'
+import { ArrowRightIcon, CheckIcon, CopyIcon, ExternalLinkIcon } from 'lucide-react'
 import { useState, type FormEvent } from 'react'
 import { SaveButton } from '@/components/save-button'
 import { Collapsible, CollapsibleContent, CollapsibleFoldTrigger } from '@/components/ui/collapsible'
 import { interpolate, useI18n } from '@/lib/i18n'
-import { CMEM_MCP_URL, type HistoryImportProgress, type SetupHistory, type SetupTool } from '../setup-data'
-import type { HistoryImportStatus } from '../setup-flow'
-import { PageHeading, SetupActions, SetupButton, SetupError, ToolMark, type SetupBack } from './shared'
+import { CMEM_MCP_URL, type SetupTool } from '../setup-data'
+import { PageHeading, SetupActions, SetupButton, ToolMark, type SetupBack } from './shared'
 
 function CopyUrl({ toolName }: { toolName: string }) {
   const { t } = useI18n()
@@ -34,7 +33,7 @@ function CopyUrl({ toolName }: { toolName: string }) {
   )
 }
 
-/** On The Go: how each picked tool reads the cloud memory (PROTO renderConnectionDetails, CONNECTOR-EVIDENCE.md). */
+/** How each picked tool reads this computer's memory (PROTO renderConnectionDetails, CONNECTOR-EVIDENCE.md). */
 function Connection({ tool, open }: { tool: SetupTool; open: boolean }) {
   const { t } = useI18n()
   return (
@@ -51,126 +50,13 @@ function Connection({ tool, open }: { tool: SetupTool; open: boolean }) {
 }
 
 /**
- * What the panel says about the last run, one entry per run state the page shows (setup-funnel.ts has the one list;
- * `idle`, no run yet, shows only the offer), so a new state fails the typecheck here until it has words. The English
- * text is the catalog key.
- */
-const IMPORT_RUN_WORDS: Record<HistoryImportProgress['state'], string> = {
-  // Seen here only after a reload while the worker still sends: Stop import beside it ends that run, and Import full
-  // history shows its progress again.
-  running: 'An import is already running.',
-  stopped: 'You stopped the import.',
-  // The import persists observations only (gap G2), so the receipt counts those and nothing else.
-  done: '{count} memories imported to your CMEM account · Ready to search.',
-  // Not the person's Stop: cmem.ai refused a batch, or a batch could not be sent.
-  failed: 'The import couldn’t finish.',
-}
-
-/** Counts as the setup screens write them. */
-const number = (value: number) => value.toLocaleString('en-US')
-
-/**
- * A run the person stopped (E9): how far it got, what was on its way when they stopped, and how to go on. "Sent" counts
- * every memory cmem.ai answered for, including any it skipped because it already had them or could not read them, so
- * this line says sent, never that they all reached the account.
- */
-function ImportStopped({ result }: { result: HistoryImportProgress }) {
-  const { t } = useI18n()
-  const unconfirmed = result.unconfirmed
-  return (
-    <div className="history-stopped" role="status">
-      <p className="history-stopped-title">{t(IMPORT_RUN_WORDS.stopped)}</p>
-      {result.sent !== undefined && result.total !== undefined && (
-        <p className="tabular">{interpolate(t('{sent} of {total} memories were sent before you stopped.'), { sent: number(result.sent), total: number(result.total) })}</p>
-      )}
-      {unconfirmed !== undefined && (
-        <p className="tabular">{unconfirmed === 1 ? t('1 more was on its way when you stopped. cmem.ai may have saved it.')
-          : interpolate(t('{count} more were on their way when you stopped. cmem.ai may have saved some of them.'), { count: number(unconfirmed) })}</p>
-      )}
-      <p>{t('Nothing was deleted on this computer or in your account. Importing again skips memories already there.')}</p>
-    </div>
-  )
-}
-
-/**
- * What a finished run did. cmem.ai answers each batch with how many memories it wrote and how many it skipped, and it
- * skips both the ones it already has and the ones it cannot read without saying which (history-import.ts `skipped`),
- * so only the written ones are called added. A run that wrote every memory it sent says so in one line, as before E9.
- * A run that skipped some (Continue after a Stop sends the stopped run's memories again, and cmem.ai skips the ones it
- * has) says what it added and what the others were, so the person can tell their history is there.
- */
-function ImportReceipt({ result }: { result: HistoryImportProgress | null }) {
-  const { t } = useI18n()
-  const imported = result?.imported ?? 0
-  const skipped = result?.skipped ?? 0
-  const sent = result?.sent
-  if (!skipped || sent === undefined) return <p className="history-done tabular" role="status">{interpolate(t(IMPORT_RUN_WORDS.done), { count: number(imported) })}</p>
-  return (
-    <div className="history-done" role="status">
-      <p className="tabular">{interpolate(t('This import added {imported} of {sent} memories to your CMEM account · Ready to search.'), { imported: number(imported), sent: number(sent) })}</p>
-      <p className="history-done-rest tabular">{skipped === 1 ? t('The other 1 was already there, or cmem.ai couldn’t read it.')
-        : interpolate(t('The other {count} were already there, or cmem.ai couldn’t read them.'), { count: number(skipped) })}</p>
-    </div>
-  )
-}
-
-function HistoryPanel({ history, status, result, stopping, onImport, onStop }: {
-  history: SetupHistory; status: HistoryImportStatus; result: HistoryImportProgress | null
-  /** A Stop sent from here (a run found running after a reload) is on its way. */
-  stopping: boolean
-  onImport: () => void; onStop: () => void
-}) {
-  const { t } = useI18n()
-  const [permission, setPermission] = useState(false)
-  return (
-    <section className="panel is-memory history-panel" aria-labelledby="history-title">
-      <h2 id="history-title">{t('Bring your existing memory')}</h2>
-      <p>{t('Add memories Claude-Mem already saved for your projects to your account.')}</p>
-      {status === 'complete' ? <ImportReceipt result={result} /> : (
-        <>
-          <p className="history-count tabular">{interpolate(t('{projects} projects · {sessions} sessions · {observations} memories'), { projects: history.projects, sessions: history.sessions, observations: number(history.observations) })}</p>
-          {/* The last run, as the worker reports it. */}
-          {result?.state === 'failed' && <SetupError title={t(IMPORT_RUN_WORDS.failed)} check={t('Try adding your saved memories again. Your account keeps each memory once.')} detail={result.error} />}
-          {result?.state === 'stopped' && <ImportStopped result={result} />}
-          {/* A run found running (after a reload): Stop is right here, with no tick box; the box below is for a start. */}
-          {result?.state === 'running' && (
-            <div className="history-running">
-              <p className="history-done" role="status">{t(IMPORT_RUN_WORDS.running)}</p>
-              <SetupButton look="outline" busy={stopping} busyLabel={t('Stopping…')} onClick={onStop}>{t('Stop import')}</SetupButton>
-            </div>
-          )}
-          {result?.state === 'done' && <ImportReceipt result={result} />}
-          <label className="history-permission">
-            <input type="checkbox" checked={permission} onChange={(event) => setPermission(event.target.checked)} />
-            <span>{t('Add saved memories from all my projects to my CMEM account.')}</span>
-          </label>
-          <div className="history-actions">
-            {/* Outlined: the screen's one navy button is Continue. Dimmed, it still reads at 4.5:1 and says what it waits for. */}
-            <SetupButton look="outline" className="import-button" aria-disabled={!permission || undefined} aria-describedby={permission ? undefined : 'history-import-hint'} onClick={onImport}>{t('Add saved memories')}</SetupButton>
-            {!permission && <p id="history-import-hint" className="setup-hint"><InfoIcon aria-hidden="true" />{t('Tick the box above to turn this on.')}</p>}
-          </div>
-        </>
-      )}
-    </section>
-  )
-}
-
-/**
  * Step 6 (PROTO #route-finish-setup). Tools the install step connected are listed as connected; the others can be
- * added with a tick (E8). Detected tools come pre-ticked; the import panel shows only when there is history to import.
+ * added with a tick (E8). Detected tools come pre-ticked.
  */
-export function FinishSetupScreen({ tools, selected, onSelect, history, importStatus, importResult, stoppingImport, onImport, onStopImport, back, onContinue }: {
+export function FinishSetupScreen({ tools, selected, onSelect, back, onContinue }: {
   tools: SetupTool[]
   selected: string[]
   onSelect: (selected: string[]) => void
-  history: SetupHistory | null
-  importStatus: HistoryImportStatus
-  importResult: HistoryImportProgress | null
-  /** The person pressed Stop import and the worker has not answered yet. */
-  stoppingImport: boolean
-  onImport: () => void
-  /** Stops a run found running (after a reload), the same request as the import screen's Stop. */
-  onStopImport: () => void
   /** Absent once the installer has applied the choice and there is no earlier screen left to change. */
   back?: SetupBack | null
   onContinue: () => void
@@ -198,7 +84,7 @@ export function FinishSetupScreen({ tools, selected, onSelect, history, importSt
     <section aria-labelledby="finish-setup-title">
       <PageHeading id="finish-setup-title" title={t('Connect your tools')} />
       <form onSubmit={submit} noValidate>
-        <div className={history ? 'finish-grid has-history' : 'finish-grid'}>
+        <div className="finish-grid">
           <div className="panel finish-tools">
             <fieldset>
               <legend>{t('Use your memory in these tools')}</legend>
@@ -231,7 +117,6 @@ export function FinishSetupScreen({ tools, selected, onSelect, history, importSt
               </div>
             )}
           </div>
-          {history && <HistoryPanel history={history} status={importStatus} result={importResult} stopping={stoppingImport} onImport={onImport} onStop={onStopImport} />}
         </div>
         <SetupActions back={back}>
           <SetupButton type="submit">{t('Finish setup')} <ArrowRightIcon aria-hidden="true" /></SetupButton>

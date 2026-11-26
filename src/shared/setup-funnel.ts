@@ -11,7 +11,15 @@ export type SetupStep = (typeof SETUP_STEPS)[number];
 export const SETUP_BRANCHES = ['home'] as const;
 export type SetupBranch = (typeof SETUP_BRANCHES)[number];
 
-/** Who generates memories: CMEM Pro (hosted) or the person's own token plan. */
+/**
+ * Who generates memories: the person's own provider. The hosted `go` funnel wrote `hosted`, and it stays in the
+ * contract on purpose: states saved by older builds carry it, the lenient read (setup-state.ts) passes them through
+ * untouched, and the choice route still accepts the value on the wire so an old page's replayed write is not 400'd
+ * mid-setup. Nothing new writes it — this build's page and installer only ever send `existing` — and nothing reads
+ * the billing beyond the choice lock's equality check, so the leniency costs nothing and keeps old clients working
+ * through the upgrade. Narrowing the write check would be a worker-route behavior change (setup-state-routes.test
+ * cements the acceptance), which this UI-only task does not make.
+ */
 export const SETUP_MEMORY_BILLINGS = ['hosted', 'existing'] as const;
 export type SetupMemoryBilling = (typeof SETUP_MEMORY_BILLINGS)[number];
 
@@ -76,7 +84,11 @@ export type SetupAction = (typeof SETUP_ACTIONS)[number];
 export const SETUP_ERRORS = ['scan_failed', 'scan_retry_failed', 'upload_consent_failed', 'upload_too_large', 'usage_preference_failed', 'choice_failed', 'installer_failed', 'import_failed', 'complete_failed'] as const;
 export type SetupError = (typeof SETUP_ERRORS)[number];
 export type SetupEventName = 'setup_step_viewed' | 'setup_step_transitioned' | 'setup_step_action' | 'setup_step_error' | 'setup_page_hidden' | 'setup_completed';
-/** Version 2 moves checkout ahead of the usage screen and offers the monthly trial directly on Reveal. */
+/**
+ * Still 2: the local-only funnel reuses the v2 event schema field-for-field, so its analytics stay comparable with
+ * the checkout-era funnels already recorded under this version, and v1 events keep validating. The version number
+ * is a wire/telemetry contract, not a description of the current screens.
+ */
 export const SETUP_FUNNEL_VERSION = 2 as const;
 export interface SetupEvent {
   event: SetupEventName;

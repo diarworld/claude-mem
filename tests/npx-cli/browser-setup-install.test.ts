@@ -386,7 +386,9 @@ describe('install in GUI mode (interactive TTY, no --provider)', () => {
     expect(questions).toEqual([]);
     expect(signupRequests).toEqual([]);
     expect(JSON.parse(readFileSync(statePath, 'utf8'))).toMatchObject({ status: 'complete', choice: { branch: 'home' }, installer: { stage: 'home-ready' } });
-    expect(lines.join('\n')).toContain('Kept existing configuration');
+    // A fresh At Home run applied the local provider itself: the honest account line (home-kept-existing, a machine
+    // whose existing configuration the installer kept, is the one that says "Kept existing configuration").
+    expect(lines.join('\n')).toContain('Account:     Not required (local install)');
     expect(lines.join('\n')).not.toContain('cmem.ai');
     expect(lines.join('\n')).toContain('claude-mem installed successfully!');
     expect(existsSync(sessionPath)).toBe(false);
@@ -441,7 +443,8 @@ describe('install in GUI mode (interactive TTY, no --provider)', () => {
     expect((await browserPost('/api/setup/complete', {})).status).toBe(200);
     await install;
     expect(JSON.parse(readFileSync(intentCredentialsPath, 'utf8'))).toEqual(intentCredentials);
-    expect(lines.join('\n')).toContain('Kept existing configuration');
+    // A fresh At Home run resolves the local provider in the page, so the account line names the local install.
+    expect(lines.join('\n')).toContain('Account:     Not required (local install)');
     expect(lines.join('\n')).not.toContain('cmem.ai');
     expect(unexpected).toEqual([]);
   });

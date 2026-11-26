@@ -1,7 +1,7 @@
 import { SETUP_FUNNEL_VERSION, SETUP_STEPS, isSetupId, type SetupAction, type SetupBranch, type SetupError, type SetupEvent, type SetupStep, type SetupTelemetryContext } from '../../../../shared/setup-funnel.ts'
 import { setTimeoutThenWaitUntilCloudPageVisible } from '../live/served-from.ts'
 
-export interface VisitState { branch: SetupBranch; branch_confirmed: boolean; importComplete?: boolean }
+export interface VisitState { branch: SetupBranch; branch_confirmed: boolean }
 type PendingEvent = Omit<SetupEvent, 'setup_flow_id' | 'already_pro'>
 type Visit = { id: string; step: SetupStep; state: VisitState }
 
@@ -43,9 +43,7 @@ export function createSetupTracker(send: (event: SetupEvent) => Promise<void>, o
     view(step: SetupStep, state: VisitState) {
       if (completed || visit?.step === step) return
       if (visit) {
-        const direction = visit.step === 'import' && step === 'finish-setup'
-          ? state.importComplete ? 'forward' : 'back'
-          : SETUP_STEPS.indexOf(step) > SETUP_STEPS.indexOf(visit.step) ? 'forward' : 'back'
+        const direction = SETUP_STEPS.indexOf(step) > SETUP_STEPS.indexOf(visit.step) ? 'forward' : 'back'
         deliver(event('setup_step_transitioned', { to_step: step, direction })!)
       }
       visit = { id: uuid(), step, state: { ...state } }; hidden = false

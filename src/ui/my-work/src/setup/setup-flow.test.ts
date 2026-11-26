@@ -39,15 +39,12 @@ describe('guardStep', () => {
     assert.equal(guardStep('savings', state({ scanComplete: true, revealContinued: true })), 'choice')
     assert.equal(guardStep('finish-setup', state({ scanComplete: true, revealContinued: true, choiceContinued: true })), 'finish-setup')
   })
-  it('lands the legacy checkout and savings wire steps on Finish Setup', () => {
+  it('lands the legacy checkout, savings and import wire steps on Finish Setup', () => {
     // Old telemetry still names those steps; this build has no screens for them.
     assert.equal(guardStep('checkout', decided()), 'finish-setup')
     assert.equal(guardStep('savings', decided()), 'finish-setup')
+    assert.equal(guardStep('import', decided()), 'finish-setup')
     assert.equal(guardStep('finish-setup', decided()), 'finish-setup')
-  })
-  it('shows the import step only while an import runs', () => {
-    assert.equal(guardStep('import', decided({ importStatus: 'available' })), 'finish-setup')
-    assert.equal(guardStep('import', decided({ importStatus: 'running' })), 'import')
   })
   it('opens the launch and workspace only after setup completes with a tool picked', () => {
     assert.equal(guardStep('workspace', decided({ setupComplete: true })), 'finish-setup')
@@ -128,7 +125,7 @@ describe('Back', () => {
     assert.equal(previousStep('choice', decided(), facts), 'reveal')
     assert.equal(previousStep('finish-setup', decided(), facts), 'choice')
     // Launch only plays forward, so Back from it or from the last screen returns to Finish Setup.
-    for (const step of ['import', 'launch', 'workspace'] as const) assert.equal(previousStep(step, decided(), facts), 'finish-setup')
+    for (const step of ['launch', 'workspace'] as const) assert.equal(previousStep(step, decided(), facts), 'finish-setup')
   })
   it('treats the scan as the first screen when this run had no install screen', () => {
     assert.equal(previousStep('scan', state(), { hasInstallStep: false, choiceLocked: false }), null)
@@ -155,11 +152,9 @@ describe('Back', () => {
     assert.equal(guardStep('install', state({ installReview: true })), 'install')
     assert.equal(guardStep('scan', state({ installReview: true })), 'scan')
   })
-  it('waits exactly while the scan runs, and for the whole import, and says which', () => {
+  it('waits exactly while the scan runs, and says which', () => {
     for (const phase of SCAN_PHASES) {
       assert.equal(backWaitsFor('scan', phase), scanRunning(phase) ? 'scan' : null, phase)
-      // The import screen shows only while its import runs, whatever the scan did.
-      assert.equal(backWaitsFor('import', phase), 'import', phase)
       // No other screen waits for the scan.
       assert.equal(backWaitsFor('reveal', phase), null, phase)
     }
