@@ -1,6 +1,7 @@
 import type { CloudSync, CloudSyncStatus } from './CloudSync.js';
 import type { SyncClient } from './SyncClient.js';
 import { onContextInvalidation } from '../../shared/context-invalidation.js';
+import { logger } from '../../utils/logger.js';
 import { composeViewerSyncStatus, type S3SyncEvidence, type ViewerSyncStatus } from '../../shared/viewer-sync-status.js';
 
 type Cloud = Pick<CloudSync, 'status' | 'statusWithHubProbe' | 'historicalExcludedCount'>;
@@ -57,7 +58,13 @@ export class ViewerSyncService {
     let download = null;
     try { download = this.options.pull()?.status() ?? null; } catch { /* A closed/unreadable local cursor is unknown, never current. */ }
     let s3: S3SyncEvidence | null = null;
-    try { s3 = this.options.s3?.() ?? null; } catch { /* A closed S3 manager reads as disabled, never as an error state. */ }
+    try { s3 = this.options.s3?.() ?? null; } catch (error) {
+      // A closed S3 manager reads as disabled, never as an error state — but
+      // a REAL bug here must not masquerade as "disabled" forever.
+      logger.debug('CLOUD_SYNC', 's3 sync status accessor failed; reporting disabled', {
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
     return composeViewerSyncStatus(this.cached, download, this.excluded, this.now(), s3);
   }
 
