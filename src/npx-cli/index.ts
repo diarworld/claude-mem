@@ -70,6 +70,7 @@ ${styleText('bold', 'Runtime Commands')} (requires Bun, delegates to installed p
   ${styleText('cyan', 'npx claude-mem cleanup [--dry-run]')}    Run one-time v12.4.3 pollution cleanup (or preview counts)
   ${styleText('cyan', 'npx claude-mem project merge <from> <into> [--dry-run]')}    Fold one project's memory into another (non-destructive, syncs)
   ${styleText('cyan', 'npx claude-mem backup run|status|list')}   Manage local DB snapshots
+  ${styleText('cyan', 'npx claude-mem s3sync status|push|pull')}   Sync memory snapshots to an own S3 bucket
   ${styleText('cyan', 'npx claude-mem restore <file>')}       Restore the DB from a snapshot
   ${styleText('cyan', 'npx claude-mem import --from mem0 --source-account <label> --user <id> --project <name>')}   Import Mem0 memories (MEM0_API_KEY)
   ${styleText('cyan', 'npx claude-mem import --from supermemory --source-account <label> --namespace <id> --project <name>')}   Import Supermemory memories (SUPERMEMORY_API_KEY); add --documents for source text, --platform <host> for a host other than Claude Code, or --dry-run to preview
@@ -178,7 +179,7 @@ const HELP_AWARE_COMMANDS = new Set([
   '', 'install', 'update', 'upgrade', 'uninstall', 'remove', 'repair', 'prune',
   'start', 'stop', 'restart', 'status', 'doctor', 'mcp', 'hook',
   'adopt', 'cleanup',
-  'memory', 'import', 'telemetry', 'project', 'backup', 'restore', 'server', 'worker', 'transcript',
+  'memory', 'import', 'telemetry', 'project', 'backup', 's3sync', 'restore', 'server', 'worker', 'transcript',
   'gemini', 'kimi', 'hermes', 'aider', 'devin', 'antigravity-cli', 'pi', 't3code', 't3-code', 't3', 'grok',
 ]);
 
@@ -405,6 +406,12 @@ async function main(): Promise<void> {
     case 'backup': {
       const { runBackupCommand } = await import('./commands/backup.js');
       await runBackupCommand(args.slice(1));
+      break;
+    }
+
+    case 's3sync': {
+      const { runS3SyncCommand } = await import('./commands/s3sync.js');
+      await runS3SyncCommand(args.slice(1));
       break;
     }
 
