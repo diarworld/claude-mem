@@ -145,6 +145,11 @@ export const paths = {
   // A restore staged by `npx claude-mem restore`, applied by the next worker
   // boot before it opens the database, and the outcome of the last one.
   pendingRestore: () => join(DATA_DIR, 'backups', 'restore-pending.json'),
+  // A chroma directory restore staged by an S3 Sync pull, applied at boot
+  // right after the database restore and before the vector store opens.
+  pendingChromaRestore: () => join(DATA_DIR, 'backups', 'restore-chroma-pending.json'),
+  // Landing zone for files an S3 Sync pull downloads before they verify.
+  s3syncIncoming: () => join(DATA_DIR, 'backups', 's3sync-incoming'),
   lastRestore: () => join(DATA_DIR, 'backups', 'last-restore.json'),
   chroma: () => join(DATA_DIR, 'chroma'),
   combinedCerts: () => join(DATA_DIR, 'combined_certs.pem'),

@@ -225,6 +225,7 @@ import { ViewerSyncService, ViewerActivity } from './sync/ViewerSyncService.js';
 import { TeamBrainRoutes } from './worker/http/routes/TeamBrainRoutes.js';
 import { BackupRoutes } from './worker/http/routes/BackupRoutes.js';
 import { applyPendingRestore } from './backup/restore-swap.js';
+import { applyPendingChromaRestore } from './s3sync/chroma-restore.js';
 
 import { CorpusStore } from './worker/knowledge/CorpusStore.js';
 import { CorpusBuilder } from './worker/knowledge/CorpusBuilder.js';
@@ -1160,6 +1161,11 @@ export class WorkerService implements WorkerRef {
       await applyPendingRestore(DB_PATH, paths.backups(), {
         busyRetryWindowMs: getPlatformTimeout(WORKER_GRACEFUL_SHUTDOWN_DEADLINE_BASE_MS),
       });
+
+      // A chroma directory restore staged by an S3 Sync pull lands here, still
+      // before anything opens the vector store (ChromaMcpManager init below).
+      // Apply-once; a failure is logged and the worker starts unchanged.
+      applyPendingChromaRestore(paths.chroma());
 
       logger.info('WORKER', 'Checking for one-time CWD remap...');
       runOneTimeCwdRemap();

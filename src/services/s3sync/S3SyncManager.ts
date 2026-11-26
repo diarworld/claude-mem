@@ -7,7 +7,7 @@
  * Per-set run facts persist in state/s3sync/state.json, so status survives
  * restarts and a push that just ran is not repeated by the next boot.
  */
-import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { paths, USER_SETTINGS_PATH } from '../../shared/paths.js';
@@ -15,10 +15,12 @@ import { parseJsonWithBom, writeJsonFileAtomic } from '../../shared/atomic-json.
 import { loadClaudeMemEnv } from '../../shared/EnvManager.js';
 import { logger } from '../../utils/logger.js';
 import { BunS3Transport, type S3Transport } from './s3-transport.js';
-import { S3_SYNC_SETS, type S3SyncManifest, type S3SyncManifestFile, type S3SyncSet,
+import { S3_SYNC_SETS, isValidGenerationStamp, type S3SyncManifest, type S3SyncManifestFile, type S3SyncSet,
   changedFiles, generationPrefix, generationStamp, latestMarkerPayload, latestObjectKey,
-  manifestObjectKey, pruneGenerations, sanitizeDeviceName, setPrefix, sha256File } from './manifest.js';
-import { buildChromaSnapshotSet, buildDbSnapshotSet, type SnapshotEntry, type SnapshotInput } from './snapshot.js';
+  manifestObjectKey, parseLatestMarker, pruneGenerations, sanitizeDeviceName, setPrefix, sha256File } from './manifest.js';
+import { buildChromaSnapshotSet, buildDbSnapshotSet, gunzipFile, type SnapshotEntry, type SnapshotInput } from './snapshot.js';
+import { stagePendingChromaRestore, stagePendingRestore } from '../backup/snapshot-files.js';
+import { ChromaSyncState } from '../sync/ChromaSyncState.js';
 import type { S3SyncPushPhase } from './push-phase.js';
 
 export interface S3SyncSettingKeys {
@@ -64,6 +66,34 @@ export interface S3SyncSetStatus {
   lastGeneration: string | null;
   lastError: string | null;
   nextRunAt: number | null;
+}
+
+export interface S3SyncPullRequest {
+  set: S3SyncSet | 'all';
+  /** Pull a specific generation instead of the set's remote LATEST. */
+  generation?: string;
+  /** Stage a chroma index even when its paired db generation mismatches the pulled db (flags every project for rebuild). */
+  force?: boolean;
+}
+
+export interface S3SyncPullSetResult {
+  set: S3SyncSet;
+  /** 'pulled' = every file verified and a restore staged; 'skipped' = nothing to pull. */
+  status: 'pulled' | 'skipped';
+  /** Resolved remote generation (absent when skipped). */
+  generation?: string;
+  /** db set: staged snapshot basename; chroma set: the staging dir path. */
+  staged?: string;
+  /** chroma set only: the db generation the staged index is paired with. */
+  pairedDbGeneration?: string;
+  /** Why the set was skipped. */
+  reason?: string;
+}
+
+export interface S3SyncPullResult {
+  /** One outcome per set, in the order the sets ran. */
+  sets: S3SyncPullSetResult[];
+  lastPullAt: number;
 }
 
 const DEFAULT_INITIAL_DELAY_MS = 5 * 60_000;
@@ -430,6 +460,185 @@ export class S3SyncManager {
       this.running.delete(set);
       this.controllers.delete(set);
     }
+  }
+
+  // --- pull pipeline ------------------------------------------------------
+
+  /**
+   * Pull one or both sets from the bucket: resolve the remote generation →
+   * download every manifest file into backups/s3sync-incoming/<set>-<gen>/ →
+   * verify sha256 and size against the manifest → stage a restore. Nothing is
+   * staged until every file of the set matched, and a pull never overwrites a
+   * live file: the db lands as a snapshot plus a boot-time restore marker,
+   * settings.json/.env only as `.bak-s3sync` sidecars, and the chroma tree as
+   * a staging dir plus its own boot-time marker (chroma-restore.ts swaps it
+   * in at boot, the sqlite db already decompressed and ready to use).
+   *
+   * Generation resolution: an explicit `generation` names the requested set;
+   * with set='all' it applies to the db set while chroma resolves its own
+   * LATEST (the two sets stamp independently). A missing or unreadable LATEST
+   * is empty remote state — the set is skipped, not an error, so a first pull
+   * from a fresh bucket succeeds. An explicitly requested generation that has
+   * since vanished (pruned mid-pull by a concurrent push) is a hard error.
+   *
+   * For set='all' the sets run in order (db, then chroma) and the first
+   * failure is logged and rethrown, stopping the pull; the db restore of an
+   * earlier set stays staged.
+   */
+  async pull(request: S3SyncPullRequest): Promise<S3SyncPullResult> {
+    if (this.stopped) throw new Error('S3 sync manager stopped');
+    const sets: S3SyncSet[] = request.set === 'all' ? [...S3_SYNC_SETS] : [request.set];
+    const results: S3SyncPullSetResult[] = [];
+    let stagedDbGeneration: string | null = null;
+    for (const set of sets) {
+      try {
+        const result = await this.pullSet(set, request, stagedDbGeneration);
+        if (result.status === 'pulled' && set === 'db' && result.generation) stagedDbGeneration = result.generation;
+        results.push(result);
+      } catch (error) {
+        logger.warn('S3SYNC', `${set} pull failed`, {}, error instanceof Error ? error : new Error(String(error)));
+        throw error;
+      }
+    }
+    return { sets: results, lastPullAt: this.now() };
+  }
+
+  private async pullSet(set: S3SyncSet, request: S3SyncPullRequest, stagedDbGeneration: string | null): Promise<S3SyncPullSetResult> {
+    // An explicit generation names the requested set; with set='all' it is
+    // applied to the db set and chroma follows its own LATEST.
+    const explicitGeneration = request.set === 'all' && set === 'chroma' ? undefined : request.generation;
+
+    let generation: string;
+    if (explicitGeneration) {
+      generation = explicitGeneration;
+    } else {
+      const tempLatest = path.join(this.s3syncDir, `pull-latest-${set}-${generationStamp(this.now())}.json`);
+      mkdirSync(this.s3syncDir, { recursive: true });
+      let parsed: ReturnType<typeof parseLatestMarker>;
+      try {
+        await this.transport.download(latestObjectKey(this.device, set), tempLatest);
+        parsed = parseLatestMarker(readFileSync(tempLatest, 'utf-8'));
+      } catch (error) {
+        // No LATEST = nothing was ever pushed (or the bucket is gone): a
+        // pull has nothing to do, which is not an error.
+        logger.warn('S3SYNC', `${set} pull skipped: no remote LATEST (empty remote state)`, {},
+          error instanceof Error ? error : new Error(String(error)));
+        return { set, status: 'skipped', reason: 'no remote LATEST (empty remote state)' };
+      } finally {
+        rmSync(tempLatest, { force: true });
+      }
+      if (parsed === null) {
+        logger.warn('S3SYNC', `${set} pull skipped: remote LATEST is unreadable`, {});
+        return { set, status: 'skipped', reason: 'remote LATEST marker is unreadable' };
+      }
+      generation = parsed.generation;
+    }
+    // The generation becomes local path segments; a bucket-controlled `../..`
+    // must never pass this line.
+    if (!isValidGenerationStamp(generation)) throw new Error(`invalid generation: ${generation}`);
+
+    const incomingDir = path.join(this.dataDir, 'backups', 's3sync-incoming', `${set}-${generation}`);
+    mkdirSync(incomingDir, { recursive: true });
+    try {
+      let manifest: S3SyncManifest;
+      try {
+        const manifestPath = path.join(incomingDir, 'manifest.json');
+        await this.transport.download(manifestObjectKey(this.device, set, generation), manifestPath);
+        manifest = parseJsonWithBom<S3SyncManifest>(readFileSync(manifestPath, 'utf-8'));
+      } catch (error) {
+        if (explicitGeneration) {
+          throw new Error(`generation no longer present: ${generation}`);
+        }
+        throw error;
+      }
+
+      // Download and verify everything before anything is staged: a single
+      // mismatch aborts the set with no marker and no moved file.
+      const incomingRoot = path.resolve(incomingDir);
+      for (const file of manifest.files) {
+        const resolved = path.resolve(incomingDir, file.key);
+        if (resolved !== incomingRoot && !resolved.startsWith(incomingRoot + path.sep)) {
+          throw new Error(`manifest key escapes the incoming dir: ${file.key}`);
+        }
+        mkdirSync(path.dirname(resolved), { recursive: true });
+        await this.transport.download(`${generationPrefix(this.device, set, generation)}/${file.key}`, resolved);
+        if (await sha256File(resolved) !== file.sha256 || statSync(resolved).size !== file.bytes) {
+          throw new Error(`downloaded file does not match the manifest: ${file.key}`);
+        }
+      }
+
+      if (set === 'db') {
+        return await this.stageDbPull(generation, manifest, incomingDir);
+      }
+      return await this.stageChromaPull(generation, request.force === true, stagedDbGeneration, manifest, incomingDir);
+    } catch (error) {
+      // Nothing staged: the incoming dir is disposable.
+      rmSync(incomingDir, { recursive: true, force: true });
+      throw error;
+    }
+  }
+
+  /** Gunzip the verified db into backups/ and stage the boot-time restore. Live settings/env are never touched — sidecars only. */
+  private async stageDbPull(generation: string, manifest: S3SyncManifest, incomingDir: string): Promise<S3SyncPullSetResult> {
+    const files = manifest.files;
+    const dbGz = files.find(file => file.key === 'claude-mem.db.gz');
+    if (!dbGz) throw new Error(`db manifest has no claude-mem.db.gz: ${generation}`);
+    const backupsDir = path.join(this.dataDir, 'backups');
+    mkdirSync(backupsDir, { recursive: true });
+    const stagedName = `claude-mem-${generation}-from-s3.db`;
+    await gunzipFile(path.join(incomingDir, 'claude-mem.db.gz'), path.join(backupsDir, stagedName));
+    stagePendingRestore(stagedName, path.join(backupsDir, 'restore-pending.json'));
+
+    for (const [key, sidecarName] of [['settings.json', 'settings.json.bak-s3sync'], ['env', '.env.bak-s3sync']] as const) {
+      if (!files.some(file => file.key === key)) continue;
+      const sidecar = path.join(this.dataDir, sidecarName);
+      copyFileSync(path.join(incomingDir, key), sidecar);
+      logger.info('S3SYNC', `Pulled ${key} staged as a sidecar; applying it stays a manual step`, { sidecar });
+    }
+
+    const state = this.loadState();
+    state.db.lastPullAt = this.now();
+    this.saveState(state);
+    logger.info('S3SYNC', 'db pull complete', { generation, staged: stagedName });
+    return { set: 'db', status: 'pulled', generation, staged: stagedName };
+  }
+
+  /** Move the verified chroma tree into a staging dir (chroma/ prefix stripped, sqlite gunzipped) and stage the boot-time swap. */
+  private async stageChromaPull(generation: string, force: boolean, stagedDbGeneration: string | null, manifest: S3SyncManifest, incomingDir: string): Promise<S3SyncPullSetResult> {
+    const files = manifest.files;
+    const paired = manifest.pairedDbGeneration;
+    if (paired && stagedDbGeneration && stagedDbGeneration !== paired) {
+      if (!force) {
+        throw new Error(`chroma index is paired with db generation ${paired}, pulled db is ${stagedDbGeneration}`);
+      }
+      // The operator forced a mismatched index in; the local vector state can
+      // only recover by rebuilding from the restored database.
+      ChromaSyncState.markAllForRebuild();
+    }
+
+    const stagingDir = path.join(this.s3syncDir, `chroma-restore-${generation}`);
+    rmSync(stagingDir, { recursive: true, force: true }); // a leftover from an earlier pull must never reach the swap
+    mkdirSync(stagingDir, { recursive: true });
+    for (const file of files) {
+      const rel = file.key.startsWith('chroma/') ? file.key.slice('chroma/'.length) : file.key;
+      const dst = path.join(stagingDir, rel);
+      mkdirSync(path.dirname(dst), { recursive: true });
+      renameSync(path.join(incomingDir, file.key), dst);
+    }
+    // The push gzips chroma.sqlite3; decompress it here so the boot swap
+    // installs a ready-to-use directory. HNSW binaries are copied as-is.
+    const stagedGz = path.join(stagingDir, 'chroma.sqlite3.gz');
+    if (existsSync(stagedGz)) {
+      await gunzipFile(stagedGz, path.join(stagingDir, 'chroma.sqlite3'));
+      rmSync(stagedGz, { force: true });
+    }
+    stagePendingChromaRestore(stagingDir, paired, path.join(this.dataDir, 'backups', 'restore-chroma-pending.json'));
+
+    const state = this.loadState();
+    state.chroma.lastPullAt = this.now();
+    this.saveState(state);
+    logger.info('S3SYNC', 'chroma pull complete', { generation, staged: stagingDir, pairedDbGeneration: paired });
+    return { set: 'chroma', status: 'pulled', generation, staged: stagingDir, pairedDbGeneration: paired };
   }
 
   // --- status ------------------------------------------------------------
