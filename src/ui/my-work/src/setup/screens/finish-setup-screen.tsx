@@ -1,37 +1,9 @@
-import { ArrowRightIcon, CheckIcon, CopyIcon, ExternalLinkIcon } from 'lucide-react'
+import { ArrowRightIcon, CheckIcon, ExternalLinkIcon } from 'lucide-react'
 import { useState, type FormEvent } from 'react'
-import { SaveButton } from '@/components/save-button'
 import { Collapsible, CollapsibleContent, CollapsibleFoldTrigger } from '@/components/ui/collapsible'
 import { interpolate, useI18n } from '@/lib/i18n'
-import { CMEM_MCP_URL, type SetupTool } from '../setup-data'
+import { type SetupTool } from '../setup-data'
 import { PageHeading, SetupActions, SetupButton, ToolMark, type SetupBack } from './shared'
-
-function CopyUrl({ toolName }: { toolName: string }) {
-  const { t } = useI18n()
-  const [status, setStatus] = useState<'' | 'URL copied.' | 'Select and copy the URL above.'>('')
-  // Resolves false when the copy failed, so the button shows no check; the status line says what to do. The button says
-  // what happens, a copy: Copying…, Copied, Not copied; nothing on this screen says Saving or Saved (nothing is saved).
-  const copy = async () => {
-    try {
-      await navigator.clipboard.writeText(CMEM_MCP_URL)
-      setStatus('URL copied.')
-      return true
-    } catch {
-      setStatus('Select and copy the URL above.')
-      return false
-    }
-  }
-  return (
-    <>
-      <div className="connection-copy">
-        <code>{CMEM_MCP_URL}</code>
-        <SaveButton type="button" className="secondary" onClick={copy} aria-label={interpolate(t('Copy CMEM URL for {toolName}'), { toolName })}
-          icon={<CopyIcon aria-hidden="true" />} savingLabel={t('Copying…')} savedLabel={t('Copied')} notSavedLabel={t('Not copied')}>{t('Copy URL')}</SaveButton>
-      </div>
-      <p className="connection-status" role="status" aria-live="polite">{t(status)}</p>
-    </>
-  )
-}
 
 /** How each picked tool reads this computer's memory (PROTO renderConnectionDetails, CONNECTOR-EVIDENCE.md). */
 function Connection({ tool, open }: { tool: SetupTool; open: boolean }) {
@@ -42,7 +14,6 @@ function Connection({ tool, open }: { tool: SetupTool; open: boolean }) {
       <CollapsibleContent className="connection-body">
         {tool.steps && <ol>{tool.steps.map((step) => <li key={step}>{t(step)}</li>)}</ol>}
         {tool.commands && <ol className="connection-commands">{tool.commands.map((command) => <li key={command}><code>{command}</code></li>)}</ol>}
-        <CopyUrl toolName={tool.name} />
         {tool.guide && <a className="connection-guide" href={tool.guide.href} target="_blank" rel="noopener noreferrer">{t(tool.guide.label)}<ExternalLinkIcon aria-hidden="true" /></a>}
       </CollapsibleContent>
     </Collapsible>

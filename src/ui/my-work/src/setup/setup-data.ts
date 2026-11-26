@@ -371,7 +371,7 @@ export const localSetupSource: SetupSource = {
   async forgetNote(id) { await workerJson(`/api/observation/${id}`, { method: 'DELETE' }) },
 }
 
-export { CMEM_MCP_URL, SETUP_TOOLS, type SetupTool } from './agent-connections'
+export { SETUP_TOOLS, type SetupTool } from './agent-connections'
 
 /** The install selection is authoritative; cloud readers remain an optional next step. */
 export function setupToolsForInstall(install: SetupInstallState | null | undefined): SetupTool[] {

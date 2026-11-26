@@ -18,12 +18,19 @@ const GEMINI_WEB_SETUP = 'In Gemini on the web, open Connected Apps ({settings})
 const CLI_SETUP = 'Run {command} and then {login} in your terminal. Sign in to the same Claude-Mem account when prompted.'
 const GEMINI_CLI_SETUP = 'Run {command} in your terminal. Open Gemini CLI, run /mcp auth cmem, and sign in to the same Claude-Mem account.'
 
-/** Use the same public endpoint, commands and documentation the local installer's Finish Setup offers. */
+/**
+ * Use the same public endpoint, commands and documentation the local installer's Finish Setup offers. The CLI
+ * commands here are the HOSTED ones (the trial's memory lives on cmem.ai): the setup page's own entries point at the
+ * local stdio worker, so the two hosted CLI registrations are spelled out here.
+ */
 function installedClient(id: string, fallback: string, override: Partial<TrialClient> = {}): TrialClient {
   const source = SETUP_TOOLS.find(tool => tool.id === id)
   if (!source) throw new Error('Unknown setup tool: ' + id)
   return { id, name: source.name, setup: fallback, commands: source.commands, guide: source.guide?.href, ...override }
 }
+
+const HOSTED_CLAUDE_CODE_COMMANDS = ['claude mcp add --transport http --scope user cmem https://cmem.ai/api/mcp', 'claude mcp login cmem']
+const HOSTED_CODEX_COMMANDS = ['codex mcp add cmem --url https://cmem.ai/api/mcp', 'codex mcp login cmem']
 
 export const PRIMARY_TRIAL_CLIENTS: readonly TrialClient[] = [
   installedClient('chatgpt', 'Open ChatGPT Plugins ({settings}), add {url} as a custom MCP server with OAuth, and sign in to the same Claude-Mem account. Install the plugin and select it with @ in your chat.', { open: 'https://chatgpt.com/', settings: 'https://chatgpt.com/plugins', surface: 'ChatGPT Work',
@@ -38,8 +45,8 @@ export const SCHEDULING_TRIAL_CLIENTS = PRIMARY_TRIAL_CLIENTS.filter(client => c
 
 export const OTHER_TRIAL_CLIENTS: readonly TrialClient[] = [
   installedClient('gemini-cli', GEMINI_CLI_SETUP),
-  installedClient('claude-code', CLI_SETUP),
-  installedClient('codex', CLI_SETUP),
+  installedClient('claude-code', CLI_SETUP, { commands: HOSTED_CLAUDE_CODE_COMMANDS }),
+  installedClient('codex', CLI_SETUP, { commands: HOSTED_CODEX_COMMANDS }),
   { id: 'other-mcp', name: 'Other MCP agent', setup: 'Open the agent’s remote MCP settings, add {url} over HTTP, and sign in to the same Claude-Mem account with OAuth.' },
 ]
 
