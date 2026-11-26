@@ -42,7 +42,6 @@ import { extractEresolveBlock, isEresolve, npmErrorCode, runNpmStrict } from '..
 import { openBrowser } from '../install/open-browser.js';
 import { isInteractive, log } from '../install/cli-io.js';
 import { mergeSettings } from '../install/settings-io.js';
-import { setInstallerSignupContext } from '../install/pairing.js';
 import { isCmemGatewayUrl } from '../../shared/cmem-gateway.js';
 import {
   buildAnthropicMaxLocalSettings,
@@ -2225,8 +2224,6 @@ async function runInstallCommandInner(options: InstallOptions, summary: InstallS
     segments.push(styleText('dim', 'reinstall'));
   }
   log.info(segments.join(` ${dot} `));
-
-  setInstallerSignupContext({ installState: alreadyInstalled ? 'update' : 'fresh' });
 
   // Runtime hooks run the on-PATH claude-mem launcher in exec form, with no
   // shell. Only the Setup hook (version-check.js) still declares

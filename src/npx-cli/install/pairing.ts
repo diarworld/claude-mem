@@ -1,12 +1,12 @@
 /**
- * The claude-mem sign-in client shared by the installer's terminal flow and
- * `npx claude-mem teambrain join`: start an OAuth pairing on cmem.ai, show the
- * device code, poll until the browser flow answers, and apply what a ready
- * poll delivers (cloud sync connection, memory credentials, plan).
+ * The claude-mem sign-in client for `npx claude-mem teambrain join`: start an
+ * OAuth pairing on cmem.ai, show the device code, poll until the browser flow
+ * answers, and apply what a ready poll delivers (cloud sync connection,
+ * memory credentials, plan).
  *
- * The bodies below moved verbatim out of commands/install.ts, which imports
- * them back from here; teambrain joins a team through the same pairing, so
- * trimming the installer's own call sites must not take this client away.
+ * The bodies below moved verbatim out of commands/install.ts, which no longer
+ * imports them; teambrain joins a team through the same pairing, so trimming
+ * the installer's own call sites must not take this client away.
  */
 
 import * as p from '@clack/prompts';
@@ -249,18 +249,6 @@ export function lastOAuthStartErrorMessage(): string | null {
   return lastStartErrorMessage;
 }
 
-export type InstallState = 'fresh' | 'update';
-
-/**
- * What this install tells cmem.ai alongside a pairing start request: whether
- * it ran over an existing install. Set once by the install command; optional
- * on the wire and omitted when unknown.
- */
-let signupContext: { installState?: InstallState } = {};
-export function setInstallerSignupContext(ctx: { installState?: InstallState }): void {
-  signupContext = { ...ctx };
-}
-
 /**
  * Pure: the JSON body for POST /api/installer/oauth/start. `teamInvite` is
  * the TeamBrain invite token a `teambrain_join` pairing carries; it travels
@@ -269,13 +257,12 @@ export function setInstallerSignupContext(ctx: { installState?: InstallState }):
 export function buildInstallerOAuthStartBody(
   source: string,
   deviceName: string,
-  ctx: { installState?: InstallState; setupFlowId?: string } = {},
+  ctx: { setupFlowId?: string } = {},
   teamInvite?: string,
 ): Record<string, unknown> {
   return {
     source,
     device_name: deviceName,
-    ...(ctx.installState ? { install_state: ctx.installState } : {}),
     ...(isSetupId(ctx.setupFlowId) ? { setup_flow_id: ctx.setupFlowId } : {}),
     ...(teamInvite ? { team_invite: teamInvite } : {}),
   };
@@ -304,7 +291,6 @@ export async function startInstallerOAuthPairing(
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), opts.timeoutMs ?? OAUTH_START_TIMEOUT_MS);
   const startBody = buildInstallerOAuthStartBody(source, hostname(), {
-    ...signupContext,
     ...(isSetupId(opts.setupFlowId) && resolveTelemetryConsent(process.env, loadTelemetryConfig()) ? { setupFlowId: opts.setupFlowId } : {}),
   }, opts.teamInvite);
   if (opts.cloudSyncOffer) {
