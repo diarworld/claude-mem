@@ -6,8 +6,12 @@
  * dupe DO NOTHING, per-op quarantine).
  *
  * Purity contract: this module only reads a db and returns ops — no manager
- * state, no transport, no writes. The manager (Task 4) downloads the verified
- * snapshot, calls this, assigns the synthetic seq space, and applies.
+ * state, no transport, no writes of its own. One honest exception inherited
+ * from the house redaction chain: a REJECTED row's diagnostic passes through
+ * redactSyncDiagnostic, which loads the shared redaction config (a settings
+ * READ in the worker; on a settings-less dir it bootstraps settings.json).
+ * The manager (Task 4) downloads the verified snapshot, calls this, assigns
+ * the synthetic seq space, and applies.
  *
  * Identity: op.origin_device carries the peer's SYNC IDENTITY (the minted
  * UUID, S3SyncManager.ensureSyncIdentity) for the peer's own rows, and each
@@ -105,9 +109,10 @@ function parseMetadata(raw: string | null): { ok: true; value: Record<string, un
 
 /**
  * Transform one peer snapshot database into sync ops. Deterministic: rows are
- * read `ORDER BY id` and op.seq is the row id (ascending, gapless within the
- * batch) — Task 4's merge tick re-seats ops into its synthetic seq space
- * (per-run counter seeded from the stored cursor) before applying.
+ * read `ORDER BY id` and op.seq is the row id (ascending, with gaps where
+ * rows were skipped — NOT the apply seq space). Task 4's merge tick re-seats
+ * ops into its synthetic seq space (per-run counter seeded from the stored
+ * cursor) before applying; never feed these raw seqs to applyOps.
  *
  * A row that can never become a valid op (malformed JSON columns, a missing
  * required field, a rev that is not a positive decimal, a body over
@@ -163,7 +168,10 @@ export function transformSnapshotToOps(dbPath: string, peerSyncId: string, optio
       // replica that already has the row at that revision skips it stale
       // (idempotence). A non-positive or garbage rev can never apply.
       if (!/^(?:0|[1-9][0-9]*)$/.test(row.sync_rev ?? '') || row.sync_rev === '0') {
-        skip(`sync_rev must be a positive decimal string, got ${JSON.stringify(row.sync_rev ?? null)}`);
+        // The echo is truncated: a corrupt snapshot's TEXT column can hold
+        // arbitrary bytes and this reason flows into merge logs.
+        const revEcho = JSON.stringify(row.sync_rev ?? null);
+        skip(`sync_rev must be a positive decimal string, got ${revEcho.length > 40 ? `${revEcho.slice(0, 40)}…` : revEcho}`);
         continue;
       }
 
