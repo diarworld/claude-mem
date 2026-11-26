@@ -6,45 +6,21 @@ export type SetupStep = (typeof SETUP_STEPS)[number];
 // definition here, in the only module all three can load: the worker's files and request checks and the page's
 // types use these, so a state added on one side cannot be missing on another.
 
-/** Where memory lives: on this computer (`home`) or on the go through cmem.ai (`go`). */
-export const SETUP_BRANCHES = ['home', 'go'] as const;
+/** Where memory lives: on this computer. The hosted `go` branch is gone from the local-only funnel; a saved state
+ * with `branch: 'go'` is still read (setup-state.ts) and tolerated as keep-existing, never written again. */
+export const SETUP_BRANCHES = ['home'] as const;
 export type SetupBranch = (typeof SETUP_BRANCHES)[number];
 
 /** Who generates memories: CMEM Pro (hosted) or the person's own token plan. */
 export const SETUP_MEMORY_BILLINGS = ['hosted', 'existing'] as const;
 export type SetupMemoryBilling = (typeof SETUP_MEMORY_BILLINGS)[number];
 
-/** The standalone Cloud Sync offers. Hosted generation is a separate purchase. */
-export const SETUP_CLOUD_SYNC_OFFERS = ['cloud_sync_monthly', 'cloud_sync_annual'] as const;
-export type SetupCloudSyncOffer = (typeof SETUP_CLOUD_SYNC_OFFERS)[number];
-/** Older servers must not silently substitute their bundled Pro checkout. */
-export const CLOUD_SYNC_SETUP_CONTRACT = 1 as const;
-export const PRIVATE_WORK_VIEW_URL = 'https://cmem.ai/work';
-export const DEFAULT_CLOUD_SYNC_OFFER: SetupCloudSyncOffer = 'cloud_sync_monthly';
-export const CLOUD_SYNC_OFFER_TERMS: Record<SetupCloudSyncOffer, { interval: 'month' | 'year'; cents: number; trialDays: number }> = {
-  cloud_sync_monthly: { interval: 'month', cents: 1200, trialDays: 30 },
-  cloud_sync_annual: { interval: 'year', cents: 9900, trialDays: 0 },
-};
-
-/** Missing offers on old hosted choices remain the legacy bundle; own-provider Cloud defaults to monthly. */
-export function setupCloudSyncOffer(choice: { branch: SetupBranch; memoryBilling: SetupMemoryBilling; cloudSyncOffer?: SetupCloudSyncOffer }): SetupCloudSyncOffer | undefined {
-  return choice.branch === 'go' && choice.memoryBilling === 'existing'
-    ? choice.cloudSyncOffer ?? DEFAULT_CLOUD_SYNC_OFFER
-    : undefined;
-}
-
 /**
- * What the installer has done with the browser's choice. Phase 8 (checkout) picks up from `go-awaiting-checkout`:
- * the installer holds the started pairing in memory and waits for the checkout request.
+ * What the installer has done with the browser's choice. The local-only funnel has no checkout, so every applied
+ * choice ends at `home-ready`, or at `home-kept-existing` when the machine's existing configuration was kept.
  */
-export const SETUP_INSTALLER_STAGES = ['waiting-for-choice', 'home-ready', 'go-kept-existing-pro', 'go-awaiting-checkout', 'failed'] as const;
+export const SETUP_INSTALLER_STAGES = ['waiting-for-choice', 'home-ready', 'home-kept-existing', 'failed'] as const;
 export type SetupInstallerStage = (typeof SETUP_INSTALLER_STAGES)[number];
-
-/**
- * On The Go checkout (funnel Phase 8). The page asks (`requested`, counted so a second ask reopens the checkout);
- * the installer runs the existing pairing checkout and reports `waiting`, then `paid` or `failed`.
- */
-export type SetupCheckoutState = 'requested' | 'waiting' | 'paid' | 'failed';
 
 /** The funnel shows until `complete`, for new installs and upgrades alike. */
 export type SetupStatus = 'pending' | 'complete';
@@ -95,9 +71,9 @@ export const HISTORY_IMPORT_BATCH = 100;
  * 1M-context call. Cloud enforces this against both compressed and uncompressed bytes, plus its offline 400k-token
  * budget. One definition for the worker's refusal (hosted-intent.ts) and the consent step's warning. */
 export const INTENT_MAX_UPLOAD_BYTES = 2 * 1024 * 1024;
-export const SETUP_ACTIONS = ['choose_memory', 'choice_committed', 'open_checkout', 'view_hosted_plans', 'start_import', 'skip_import', 'retry_scan', 'upload_allowed', 'upload_skipped'] as const;
+export const SETUP_ACTIONS = ['choose_memory', 'choice_committed', 'start_import', 'skip_import', 'retry_scan', 'upload_allowed', 'upload_skipped'] as const;
 export type SetupAction = (typeof SETUP_ACTIONS)[number];
-export const SETUP_ERRORS = ['scan_failed', 'scan_retry_failed', 'upload_consent_failed', 'upload_too_large', 'usage_preference_failed', 'choice_failed', 'checkout_failed', 'installer_failed', 'import_failed', 'complete_failed'] as const;
+export const SETUP_ERRORS = ['scan_failed', 'scan_retry_failed', 'upload_consent_failed', 'upload_too_large', 'usage_preference_failed', 'choice_failed', 'installer_failed', 'import_failed', 'complete_failed'] as const;
 export type SetupError = (typeof SETUP_ERRORS)[number];
 export type SetupEventName = 'setup_step_viewed' | 'setup_step_transitioned' | 'setup_step_action' | 'setup_step_error' | 'setup_page_hidden' | 'setup_completed';
 /** Version 2 moves checkout ahead of the usage screen and offers the monthly trial directly on Reveal. */
@@ -116,7 +92,6 @@ export interface SetupEvent {
   to_step?: SetupStep | 'complete';
   direction?: 'forward' | 'back';
   action?: SetupAction;
-  cloud_sync_offer?: SetupCloudSyncOffer;
   error_code?: SetupError;
 }
 export interface SetupTelemetryContext { setup_flow_id: string; already_pro: boolean }
@@ -128,7 +103,7 @@ export function parseSetupEvent(value: unknown): SetupEvent | null {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
   const v = value as Record<string, unknown>;
   const base = ['event', 'event_id', 'setup_flow_id', 'setup_funnel_version', 'visit_id', 'step', 'branch', 'already_pro', 'branch_confirmed', 'occurred_at'];
-  const extra = v.event === 'setup_step_transitioned' ? ['to_step', 'direction'] : v.event === 'setup_step_action' ? ['action', 'cloud_sync_offer'] : v.event === 'setup_step_error' ? ['error_code'] : [];
+  const extra = v.event === 'setup_step_transitioned' ? ['to_step', 'direction'] : v.event === 'setup_step_action' ? ['action'] : v.event === 'setup_step_error' ? ['error_code'] : [];
   if (!member(['setup_step_viewed', 'setup_step_transitioned', 'setup_step_action', 'setup_step_error', 'setup_page_hidden', 'setup_completed'], v.event)
     || Object.keys(v).some(key => !base.includes(key) && !extra.includes(key))
     || !isSetupId(v.event_id) || !isSetupId(v.setup_flow_id) || !isSetupId(v.visit_id)
@@ -137,7 +112,7 @@ export function parseSetupEvent(value: unknown): SetupEvent | null {
     || typeof v.occurred_at !== 'number' || !Number.isSafeInteger(v.occurred_at) || v.occurred_at <= 0) return null;
   if (v.event === 'setup_step_transitioned' && ((!member(SETUP_STEPS, v.to_step) && v.to_step !== 'complete') || !member(['forward', 'back'], v.direction) || v.to_step === v.step)) return null;
   if (v.event === 'setup_step_action' && !member(SETUP_ACTIONS, v.action)) return null;
-  if (v.cloud_sync_offer !== undefined && (v.branch !== 'go' || !member(SETUP_CLOUD_SYNC_OFFERS, v.cloud_sync_offer))) return null;
+  // A `cloud_sync_offer` key is no longer in the closed schema, so an event carrying one fails the unknown-key check above.
   if (v.event === 'setup_step_error' && !member(SETUP_ERRORS, v.error_code)) return null;
   if ((v.event === 'setup_completed' || v.to_step === 'complete') && (v.step !== 'workspace' || (v.to_step === 'complete' && v.direction !== 'forward'))) return null;
   return v as unknown as SetupEvent;

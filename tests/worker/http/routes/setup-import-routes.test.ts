@@ -3,7 +3,7 @@
 import { afterAll, afterEach, beforeEach, describe, expect, it } from 'bun:test';
 import express from 'express';
 import type { Server } from 'node:http';
-import { mkdirSync, mkdtempSync, rmSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { WorkViewRoutes } from '../../../../src/services/worker/http/routes/WorkViewRoutes.js';
 import { HISTORY_IMPORT_BATCH, HistoryImport } from '../../../../src/services/setup/history-import.js';
@@ -72,9 +72,15 @@ const historyImport = () => new HistoryImport({
   openDatabase: () => ({ prepare: store.db.prepare.bind(store.db), close() {} }) as never,
   origin: () => 'https://cmem.test', token: () => 'cm_pro_token', fetch: holdingCmem,
 });
-/** On The Go is chosen and the upload is running, with its first batch on its way to cmem.ai. */
+/** A legacy On The Go state, written by an older build, with its upload running and the first batch on its way. */
 async function importRunning() {
-  expect((await post('/api/setup/choice', { branch: 'go', memoryBilling: 'hosted' })).status).toBe(200);
+  // The home-only funnel never writes a go choice and its choice route refuses one; the import stays reachable
+  // only for a state file an older build left behind, which the worker still reads leniently.
+  writeFileSync(statePath, JSON.stringify({
+    status: 'pending',
+    choice: { branch: 'go', memoryBilling: 'hosted', chosenAt: new Date().toISOString() },
+    installer: null, tools: null, completedAt: null,
+  }));
   expect((await post('/api/setup/import', {})).status).toBe(202);
   expect((await state()).historyImport.state).toBe('running');
   expect(imports).toHaveLength(1);

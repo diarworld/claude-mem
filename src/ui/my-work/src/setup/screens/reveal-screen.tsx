@@ -183,7 +183,7 @@ function FocusAreaRows({ reveal, loading, workLoading, incomplete, emptyMessage,
 }
 
 /** The first payoff is the same saved focus areas as My Work. Areas and their work land independently. */
-export function RevealScreen({ agents, reveal, extraction, uploadedAgents, recentPrompts, hostedNotice, scanComplete = false, installedAgentCount = 0, skipped = false, back, onContinue, onStartTrial, busy }: {
+export function RevealScreen({ agents, reveal, extraction, uploadedAgents, recentPrompts, hostedNotice, scanComplete = false, installedAgentCount = 0, skipped = false, back, onContinue }: {
   agents: SetupScanAgent[]; reveal: RevealSets; extraction: SetupExtraction | null; uploadedAgents: string[] | null; recentPrompts: SetupRecentPrompt[]; hostedNotice?: string | null
   scanComplete?: boolean
   installedAgentCount?: number
@@ -191,8 +191,6 @@ export function RevealScreen({ agents, reveal, extraction, uploadedAgents, recen
   skipped?: boolean
   back?: SetupBack | null
   onContinue: () => void
-  onStartTrial?: () => void
-  busy?: boolean
 }) {
   const { t, locale } = useI18n()
   // The results came only from the tools the person chose to upload.
@@ -208,23 +206,7 @@ export function RevealScreen({ agents, reveal, extraction, uploadedAgents, recen
   const freshInstall = scanComplete && !hasHistory && !hasResults && !reveal.requestReadErrorCount
     && extraction?.state !== 'running' && extraction?.state !== 'failed'
   const hasDetails = !!(reveal.work?.length || reveal.rules?.length || (!reveal.focusAreas?.length && reveal.goals?.length) || reveal.requestReadErrorCount)
-  const firstArea = reveal.focusAreas?.find(area => area.name.trim())?.name
-  const nextSessionCopy = freshInstall
-    ? t('With Cloud Sync, your next agent can pick up where you left off, even on another device.')
-    : t('Pick up your next session in another agent or on another device.')
-  const continueRow = onStartTrial ? (
-    <div className="reveal-trial">
-      <p>{firstArea ? interpolate(t('Pick up {area} in another agent or on another device.'), { area: firstArea })
-        : hasResults || promptCount > 0 ? t('Pick up this work in another agent or on another device.')
-        : nextSessionCopy}</p>
-      <small>{t('No card needed for your first 30 days. Continue for $12/month if you choose.')}{' '}
-        {t('Sync saved prompts, memories and summaries to your private account, along with Work View groups, progress, reviews and published links.')}</small>
-      <SetupActions back={back}>
-        <SetupButton busy={busy} onClick={onStartTrial}>{t('Try Cloud Sync free for 30 days')} <ArrowRightIcon aria-hidden="true" /></SetupButton>
-        <SetupButton look="text" disabled={busy} onClick={onContinue}>{t('Annual or local setup')}</SetupButton>
-      </SetupActions>
-    </div>
-  ) : (
+  const continueRow = (
     <SetupActions back={back} className="is-bar">
       <SetupButton onClick={onContinue}>{t('Continue')} <ArrowRightIcon aria-hidden="true" /></SetupButton>
     </SetupActions>
@@ -259,7 +241,6 @@ export function RevealScreen({ agents, reveal, extraction, uploadedAgents, recen
       <PageHeading id="reveal-title" title={t('Your recent work')}
         lead={hostedNotice ? undefined : leadText} />
       {hostedNotice && <p className="scan-status" role="status">{t(hostedNotice)}</p>}
-      {onStartTrial && continueRow}
       {extraction?.state === 'failed' && <p className="reveal-notice" role="status">{t('Couldn’t finish connecting your work. You can continue with what’s here.')}</p>}
       {promptsOnly && <p className="reveal-notice" role="status">{t('Your conversations are saved. Focus areas need an available agent; you can continue setup now.')}</p>}
       {promptsOnly ? <PromptsOnly agents={withPrompts} recentPrompts={recentPrompts} /> : (
@@ -281,7 +262,7 @@ export function RevealScreen({ agents, reveal, extraction, uploadedAgents, recen
           </CollapsibleContent>}
         </Collapsible>
       )}
-      {!onStartTrial && continueRow}
+      {continueRow}
     </section>
   )
 }

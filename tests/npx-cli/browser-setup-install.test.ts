@@ -367,7 +367,7 @@ describe('install in GUI mode (interactive TTY, no --provider)', () => {
     await waitForStage('waiting-for-choice');
     // The worker is up before any login or provider question, and the page is open.
     expect(workerStarts).toBe(1);
-    expect(workerStartStates).toEqual([{ status: 'pending', choice: null, installer: null, checkout: null, tools: null, completedAt: null }]);
+    expect(workerStartStates).toEqual([{ status: 'pending', choice: null, installer: null, tools: null, completedAt: null }]);
     expect(workerStartSessions).toMatchObject([{ pid: process.pid, already_pro: false }]);
     expect((workerStartSessions[0] as { setup_flow_id: string }).setup_flow_id).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
     expect(opened).toEqual([`${workerBase}/?setup=1`]);
@@ -395,12 +395,11 @@ describe('install in GUI mode (interactive TTY, no --provider)', () => {
   });
 
   it('clears an interrupted GUI hand-off before the worker starts', async () => {
-    writeFileSync(statePath, JSON.stringify({ status: 'pending', choice: { branch: 'go', memoryBilling: 'hosted', chosenAt: 'earlier' },
-      installer: { stage: 'go-awaiting-checkout', error: null, updatedAt: 'earlier' },
-      checkout: { state: 'requested', requests: 1, error: null, updatedAt: 'earlier' }, tools: ['codex'], completedAt: null }));
+    writeFileSync(statePath, JSON.stringify({ status: 'pending', choice: { branch: 'home', memoryBilling: 'existing', chosenAt: 'earlier' },
+      installer: { stage: 'home-ready', error: null, updatedAt: 'earlier' }, tools: ['codex'], completedAt: null }));
     const install = runInstallCommand({});
     await waitForStage('waiting-for-choice');
-    expect(workerStartStates[0]).toEqual({ status: 'pending', choice: null, installer: null, checkout: null, tools: null, completedAt: null });
+    expect(workerStartStates[0]).toEqual({ status: 'pending', choice: null, installer: null, tools: null, completedAt: null });
     expect(pairingStarts).toEqual([]);
     await browserPost('/api/setup/choice', { branch: 'home', memoryBilling: 'existing' });
     await waitForStage('home-ready');
@@ -423,26 +422,23 @@ describe('install in GUI mode (interactive TTY, no --provider)', () => {
     expect(lines.join('\n')).toMatch(/Agents: .*claude-code, codex-cli/);
   });
 
-  it('On The Go: the choice also resolves locally, with no pairing, no checkout and no cmem.ai request', async () => {
+  it('the hosted branch is gone from the wire: no pairing, no checkout route, no cmem.ai request', async () => {
     writeFileSync(intentCredentialsPath, JSON.stringify(intentCredentials), { mode: 0o600 });
     const install = runInstallCommand({});
     await waitForStage('waiting-for-choice');
     expect(pairingStarts).toEqual([]);
-    expect((await browserPost('/api/setup/checkout', {})).status).toBe(409);
-    expect((await browserPost('/api/setup/choice', { branch: 'go', memoryBilling: 'hosted' })).status).toBe(200);
+    // The checkout hand-off left with the hosted funnel: the route is unregistered and go choices are refused.
+    expect((await browserPost('/api/setup/checkout', {})).status).toBe(404);
+    expect((await browserPost('/api/setup/choice', { branch: 'go', memoryBilling: 'hosted' })).status).toBe(400);
+    expect((await browserState()).choice).toBeNull();
+    await browserPost('/api/setup/choice', { branch: 'home', memoryBilling: 'existing' });
     await waitForStage('home-ready');
     expect(pairingStarts).toEqual([]);
     expect(opened).toEqual([`${workerBase}/?setup=1`]);
     expect(unexpected).toEqual([]);
-    // useSubscriptionAuth() already ran during the choice: the hosted-billing
-    // pick changes nothing about the local-only resolution.
+    // useSubscriptionAuth() ran during the choice, exactly as the home funnel always resolved it.
     expect(readSettings()).toMatchObject({ CLAUDE_MEM_PROVIDER: 'claude', CLAUDE_MEM_CLAUDE_AUTH_METHOD: 'subscription' });
-    // The worker still refuses Finish Setup for a non-home choice; the funnel
-    // contract becomes home-only in a later task. Release the installer the
-    // way a completed page would, through the state it serves.
-    expect((await browserPost('/api/setup/complete', {})).status).toBe(409);
-    const state = JSON.parse(readFileSync(statePath, 'utf8'));
-    writeFileSync(statePath, JSON.stringify({ ...state, status: 'complete', completedAt: new Date().toISOString() }));
+    expect((await browserPost('/api/setup/complete', {})).status).toBe(200);
     await install;
     expect(JSON.parse(readFileSync(intentCredentialsPath, 'utf8'))).toEqual(intentCredentials);
     expect(lines.join('\n')).toContain('Kept existing configuration');

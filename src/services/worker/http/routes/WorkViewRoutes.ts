@@ -55,8 +55,8 @@ import { readHistoryCounts, type HistoryImport } from '../../../setup/history-im
 import { createSetupTelemetry } from '../../../setup/telemetry.js';
 import { createSetupInstallerResumer } from '../../../setup/resume-installer.js';
 import { hasActiveSetupSession, hasProConfiguration, readSetupState, setupStatePath, writeSetupState, type SetupStateFile, type SetupStateView } from '../../../../shared/setup-state.js';
-import { toSetupUsage } from '../../../../shared/setup-usage.js';
-import { historyImportRunning, SETUP_BRANCHES, SETUP_CLOUD_SYNC_OFFERS, SETUP_INSTALLER_STAGES, SETUP_MEMORY_BILLINGS, setupCloudSyncOffer } from '../../../../shared/setup-funnel.js';
+
+import { historyImportRunning, SETUP_BRANCHES, SETUP_INSTALLER_STAGES, SETUP_MEMORY_BILLINGS } from '../../../../shared/setup-funnel.js';
 import { hasPendingInstallSetup, SETUP_DSH_PROFILE_MAX_CHARACTERS, SETUP_INSTALL_NOTE_MAX_CHARACTERS, SETUP_INSTALL_STATUSES } from '../../../../shared/setup-install.js';
 import {
   CONTINUABLE_PLATFORMS, CONVERSATION_SESSION_UUID_PATTERN, OPEN_IN_APP_CLICK_ID_PATTERN, type ConversationContinuation, type ConversationContinuationNotice,
@@ -358,27 +358,15 @@ function redactSetupInstall(install: SetupStateFile['install']): SetupStateFile[
   return { ...install, selection: email ? { ...selection, emailProvided: true } : selection };
 }
 
-// Cloud Sync can use the existing provider. An explicit offer never changes a local or legacy hosted choice.
+// The local-only funnel has one branch: memory on this computer, paid for by the provider already set up here.
 const setupChoiceBody = z.object({
   branch: z.enum(SETUP_BRANCHES),
   memoryBilling: z.enum(SETUP_MEMORY_BILLINGS),
-  cloudSyncOffer: z.enum(SETUP_CLOUD_SYNC_OFFERS).optional(),
-  shareWorkView: z.literal(true).optional(),
-  openCheckout: z.literal(true).optional(),
-}).strict().refine(choice => !choice.cloudSyncOffer || (choice.branch === 'go' && choice.memoryBilling === 'existing'), {
-  message: 'A Cloud Sync offer requires On The Go with your existing memory provider.',
-}).refine(choice => !choice.shareWorkView || !!choice.cloudSyncOffer, {
-  message: 'Work View sharing requires an explicit standalone Cloud Sync offer.',
-}).refine(choice => !choice.openCheckout || !!choice.cloudSyncOffer, {
-  message: 'Select a Cloud Sync offer to open its checkout.',
-});
+}).strict();
 const setupInstallerBody = z.object({
   stage: z.enum(SETUP_INSTALLER_STAGES),
   error: z.string().max(2000).nullable().optional(),
-  /** The installer mirrors the pairing checkout it is running (funnel Phase 8). */
-  checkout: z.enum(['waiting', 'paid', 'failed']).optional(),
 }).strict();
-const setupCheckoutBody = z.object({}).strict();
 const setupResumeBody = z.object({ retry: z.boolean().optional() }).strict();
 const setupCompleteBody = z.object({
   /** Finish Setup's picked tools; the installer sets up the local ones it has not installed. */
@@ -948,7 +936,6 @@ export class WorkViewRoutes extends BaseRouteHandler {
       res.status(202).json(this.setupStateView());
     }));
     app.post('/api/setup/installer', workViewLoopbackOnly, requireWorkViewOrigin, validateBody(setupInstallerBody), this.wrapHandler(this.saveInstallerStage));
-    app.post('/api/setup/checkout', workViewLoopbackOnly, requireWorkViewOrigin, validateBody(setupCheckoutBody), this.wrapHandler(this.requestCheckout));
     app.post('/api/setup/import', workViewLoopbackOnly, requireWorkViewOrigin, validateBody(setupImportBody), this.wrapHandler(this.startHistoryImport));
     // Finish Setup's "Stop import": the same guards. It only ends a run; the person's own POST above starts one again.
     app.post('/api/setup/import/stop', workViewLoopbackOnly, requireWorkViewOrigin, validateBody(setupImportBody), this.wrapHandler(this.stopHistoryImport));
@@ -1010,11 +997,18 @@ export class WorkViewRoutes extends BaseRouteHandler {
     finally { database.close(); }
   }
 
-  /** Finish Setup's "Import full history" (On The Go only, after checkout). */
+  /**
+   * Finish Setup's "Import full history". The home-only funnel never offers it (it uploads to the CMEM account,
+   * which only an On The Go choice, written by an older build, names); the guard stays so a legacy state with a
+   * saved `branch: 'go'` choice keeps working.
+   */
   private startHistoryImport = (_req: Request, res: Response): void => {
     if (!this.historyImport) { res.status(503).json({ error: 'Bringing your memory is unavailable on this worker.' }); return; }
     const state = readSetupState(this.setupStatePath);
-    if (state.choice?.branch !== 'go') { res.status(409).json({ error: 'Bringing your memory to CMEM is part of On The Go.' }); return; }
+    // `branch` types as the home-only funnel's one value, but a file written by an older build can still say 'go'
+    // (setup-state.ts reads leniently), so the check reads it as the unknown value that it is.
+    const savedBranch = (state.choice as { branch?: unknown } | null)?.branch;
+    if (savedBranch !== 'go') { res.status(409).json({ error: 'Bringing your memory to CMEM is part of On The Go.' }); return; }
     try {
       const started = this.historyImport.start();
       res.setHeader('Cache-Control', 'no-store');
@@ -1101,61 +1095,28 @@ export class WorkViewRoutes extends BaseRouteHandler {
 
   /** The choice can change until the installer acts on it; after that the installer holds the result. */
   private saveSetupChoice = (req: Request, res: Response): void => {
-    const { branch, memoryBilling, cloudSyncOffer, shareWorkView, openCheckout } = req.body as z.infer<typeof setupChoiceBody>;
-    const offer = setupCloudSyncOffer({ branch, memoryBilling, cloudSyncOffer });
+    const { branch, memoryBilling } = req.body as z.infer<typeof setupChoiceBody>;
     const state = readSetupState(this.setupStatePath);
     if (state.status === 'complete') { res.status(409).json({ error: 'Setup is already complete.', state: this.setupStateView(state) }); return; }
     if (state.install && state.install.status !== 'ready') { res.status(409).json({ error: 'Finish installing your agents before choosing memory storage.' }); return; }
     const applied = state.installer && state.installer.stage !== 'waiting-for-choice' && state.installer.stage !== 'failed';
-    // The first checkout request belongs to the plan saved in this same write. A repeat
-    // or a second browser tab cannot replace that plan while the terminal sets up pairing.
-    const sameChoice = state.choice?.branch === branch && state.choice.memoryBilling === memoryBilling
-      && setupCloudSyncOffer(state.choice) === offer && state.choice.shareWorkView === shareWorkView;
-    const locked = applied || (!!state.checkout && state.installer?.stage !== 'failed');
-    if (locked && !sameChoice) {
+    if (applied && (state.choice?.branch !== branch || state.choice.memoryBilling !== memoryBilling)) {
       res.status(409).json({ error: 'The installer already applied the earlier choice.', state: this.setupStateView(state) });
       return;
     }
     const now = new Date().toISOString();
-    // Older installers can have an applied choice with no checkout request yet.
-    let checkout = sameChoice ? state.checkout : null;
-    if (openCheckout && !checkout && !this.setupStateView(state).alreadyPro) {
-      checkout = { state: 'requested', requests: 1, error: null, updatedAt: now };
-    }
-    if (locked && checkout === state.checkout) { res.setHeader('Cache-Control', 'no-store'); res.json(this.setupStateView(state)); return; }
-    const scanUsage = offer && !state.choice?.usage ? this.setupScan?.state().usage : null;
-    const usage = state.choice?.usage ?? (scanUsage ? toSetupUsage(scanUsage) : undefined);
-    const choice = locked ? state.choice : {
-      branch, memoryBilling, chosenAt: now,
-      ...(shareWorkView ? { shareWorkView } : {}),
-      ...(offer ? { cloudSyncOffer: offer, ...(usage ? { usage } : {}) } : {}),
-    };
-    this.saveSetupState({ ...state, choice, checkout }, res);
+    const choice = applied ? state.choice : { branch, memoryBilling, chosenAt: now };
+    this.saveSetupState({ ...state, choice }, res);
   };
 
   private saveInstallerStage = (req: Request, res: Response): void => {
-    const { stage, error, checkout } = req.body as z.infer<typeof setupInstallerBody>;
+    const { stage, error } = req.body as z.infer<typeof setupInstallerBody>;
     const state = readSetupState(this.setupStatePath);
     const now = new Date().toISOString();
-    // A new installer run starts a fresh hand-off: a choice or checkout left by an earlier, interrupted run is not applied.
+    // A new installer run starts a fresh hand-off: a choice left by an earlier, interrupted run is not applied.
     const fresh = stage === 'waiting-for-choice';
     const choice = fresh ? null : state.choice;
-    const checkoutState = fresh ? null : checkout
-      ? { state: checkout, requests: state.checkout?.requests ?? 0, error: checkout === 'failed' ? error ?? null : null, updatedAt: now }
-      : state.checkout;
-    this.saveSetupState({ ...state, choice, checkout: checkoutState, installer: { stage, error: checkout ? state.installer?.error ?? null : error ?? null, updatedAt: now } }, res);
-  };
-
-  /** The page's Continue on Checkout: the installer holding the On The Go pairing opens the checkout (again, on a repeat). */
-  private requestCheckout = (_req: Request, res: Response): void => {
-    const state = readSetupState(this.setupStatePath);
-    if (state.checkout?.state === 'paid') { res.setHeader('Cache-Control', 'no-store'); res.json(this.setupStateView(state)); return; }
-    if (state.choice?.branch !== 'go' || state.installer?.stage !== 'go-awaiting-checkout') {
-      res.status(409).json({ error: 'Checkout opens once the terminal has started your CMEM Pro sign-in.', state: this.setupStateView(state) });
-      return;
-    }
-    const requests = (state.checkout?.requests ?? 0) + 1;
-    this.saveSetupState({ ...state, checkout: { state: 'requested', requests, error: null, updatedAt: new Date().toISOString() } }, res);
+    this.saveSetupState({ ...state, choice, installer: { stage, error: error ?? null, updatedAt: now } }, res);
   };
 
   private completeSetup = (req: Request, res: Response): void => {
@@ -1164,10 +1125,9 @@ export class WorkViewRoutes extends BaseRouteHandler {
     if (state.status === 'complete') { res.setHeader('Cache-Control', 'no-store'); res.json(this.setupStateView(state)); return; }
     if (state.install && state.install.status !== 'ready') { res.status(409).json({ error: 'Finish installing your agents before completing setup.' }); return; }
     if (!state.choice) { res.status(409).json({ error: 'Choose where to keep your memory before finishing setup.', state: this.setupStateView(state) }); return; }
-    const providerReady = state.choice.branch === 'home'
-      ? state.installer?.stage === 'home-ready'
-      : state.installer?.stage === 'go-kept-existing-pro'
-        || (state.installer?.stage === 'go-awaiting-checkout' && state.checkout?.state === 'paid');
+    // The home-only funnel has no checkout to wait for: the choice completes once the installer
+    // has applied it, or reported that the machine's existing configuration was kept.
+    const providerReady = state.installer?.stage === 'home-ready' || state.installer?.stage === 'home-kept-existing';
     if (!providerReady) {
       res.status(409).json({ error: 'Finish setting up your memory provider before finishing setup.', state: this.setupStateView(state) });
       return;
@@ -1944,7 +1904,7 @@ export class WorkViewRoutes extends BaseRouteHandler {
     this.send(res, overview ? 'work-view-overview' : 'work-view', overview ? workViewOverview(initial) : initial);
     const scan: SetupScanState | undefined = this.setupScan?.state();
     if (scan && scan.phase !== 'idle') this.send(res, 'setup-scan', scan);
-    // A reconnecting setup page may have missed checkout being paid or an import finishing: send where setup stands.
+    // A reconnecting setup page may have missed an import finishing: send where setup stands.
     // A setup state that cannot be read is logged and leaves the work feed running.
     try {
       const setupState = readSetupState(this.setupStatePath);

@@ -1,9 +1,10 @@
-// Run with `npm test`. The funnel step machine (install-funnel plan Phase 3, item 1).
+// Run with `npm test`. The funnel step machine (install-funnel plan Phase 3, item 1), home-only since the
+// local-only funnel (remove-cmem-auth-open plan Task 5): one branch, no checkout or savings screens.
 import assert from 'node:assert/strict'
 import { describe, it } from 'node:test'
 import {
   PROGRESS_STEP_OF_SCREEN, PROGRESS_STEP_WORDS, SCAN_PHASE_RUNNING, SETUP_PROGRESS_STEPS, SETUP_STEPS, backWaitsFor, choiceLocked, guardStep,
-  hydrateSetupChoice, initialFlowState, launchLengthMs, nextAfterChoice, previousStep, progressStepState, scanMovesOn, scanRunning, type SetupFlowState, type SetupStep,
+  hydrateSetupChoice, initialFlowState, launchLengthMs, previousStep, progressStepState, scanMovesOn, scanRunning, type SetupFlowState, type SetupStep,
 } from './setup-flow.ts'
 import type { SetupScanPhase } from '../../../../shared/setup-funnel.ts'
 
@@ -11,25 +12,13 @@ import type { SetupScanPhase } from '../../../../shared/setup-funnel.ts'
 const SCAN_PHASES = Object.keys(SCAN_PHASE_RUNNING) as SetupScanPhase[]
 
 const state = (changes: Partial<SetupFlowState> = {}): SetupFlowState => ({ ...initialFlowState(false), ...changes })
-const decided = (changes: Partial<SetupFlowState> = {}) => state({ scanComplete: true, revealContinued: true, choiceContinued: true, savingsComplete: true, ...changes })
+const decided = (changes: Partial<SetupFlowState> = {}) => state({ scanComplete: true, revealContinued: true, choiceContinued: true, ...changes })
 
-describe('nextAfterChoice', () => {
-  it('sends On The Go to checkout and At Home straight to Finish Setup', () => {
-    assert.equal(nextAfterChoice(state({ branch: 'go' })), 'checkout')
-    assert.equal(nextAfterChoice(state({ branch: 'home' })), 'finish-setup')
-  })
-  it('skips checkout for people already on Pro', () => {
-    assert.equal(nextAfterChoice(state({ branch: 'go', alreadyPro: true })), 'finish-setup')
-  })
-  it('offers hosted generation only after standalone checkout is confirmed', () => {
-    for (const cloudSyncOffer of ['cloud_sync_monthly', 'cloud_sync_annual'] as const) {
-      const confirmed = decided({ cloudSyncOffer, checkoutReviewed: true, savingsComplete: false })
-      assert.equal(guardStep('finish-setup', confirmed), 'savings')
-      assert.equal(guardStep('savings', { ...confirmed, checkoutReviewed: false }), 'checkout')
-      assert.equal(guardStep('savings', { ...confirmed, memoryBilling: 'hosted' }), 'finish-setup')
-      assert.equal(guardStep('savings', { ...confirmed, branch: 'home' }), 'finish-setup')
-      assert.equal(guardStep('savings', { ...confirmed, alreadyPro: true }), 'finish-setup')
-    }
+describe('initialFlowState', () => {
+  it('starts every install on the one home branch with the existing memory provider', () => {
+    assert.equal(state().branch, 'home')
+    assert.equal(state().memoryBilling, 'existing')
+    assert.equal(state().alreadyPro, false)
   })
 })
 
@@ -48,25 +37,23 @@ describe('guardStep', () => {
   it('walks back to the first decision still open', () => {
     assert.equal(guardStep('choice', state({ scanComplete: true })), 'reveal')
     assert.equal(guardStep('savings', state({ scanComplete: true, revealContinued: true })), 'choice')
-    assert.equal(guardStep('finish-setup', state({ scanComplete: true, revealContinued: true, choiceContinued: true })), 'checkout')
+    assert.equal(guardStep('finish-setup', state({ scanComplete: true, revealContinued: true, choiceContinued: true })), 'finish-setup')
   })
-  it('shows checkout only on On The Go, and requires it there before Finish Setup', () => {
-    assert.equal(guardStep('checkout', decided({ branch: 'home' })), 'finish-setup')
-    assert.equal(guardStep('finish-setup', decided({ branch: 'go' })), 'checkout')
-    assert.equal(guardStep('finish-setup', decided({ branch: 'go', checkoutReviewed: true })), 'finish-setup')
-    assert.equal(guardStep('finish-setup', decided({ branch: 'go', alreadyPro: true })), 'finish-setup')
-    assert.equal(guardStep('checkout', decided({ branch: 'go', alreadyPro: true })), 'finish-setup')
+  it('lands the legacy checkout and savings wire steps on Finish Setup', () => {
+    // Old telemetry still names those steps; this build has no screens for them.
+    assert.equal(guardStep('checkout', decided()), 'finish-setup')
+    assert.equal(guardStep('savings', decided()), 'finish-setup')
+    assert.equal(guardStep('finish-setup', decided()), 'finish-setup')
   })
-  it('shows the import step only while an On The Go import runs', () => {
-    assert.equal(guardStep('import', decided({ branch: 'home', importStatus: 'running' })), 'finish-setup')
-    assert.equal(guardStep('import', decided({ branch: 'go', checkoutReviewed: true, importStatus: 'available' })), 'finish-setup')
-    assert.equal(guardStep('import', decided({ branch: 'go', checkoutReviewed: true, importStatus: 'running' })), 'import')
+  it('shows the import step only while an import runs', () => {
+    assert.equal(guardStep('import', decided({ importStatus: 'available' })), 'finish-setup')
+    assert.equal(guardStep('import', decided({ importStatus: 'running' })), 'import')
   })
   it('opens the launch and workspace only after setup completes with a tool picked', () => {
-    assert.equal(guardStep('workspace', decided({ branch: 'home', setupComplete: true })), 'finish-setup')
-    assert.equal(guardStep('workspace', decided({ branch: 'home', finishTools: ['claude-code'] })), 'finish-setup')
-    assert.equal(guardStep('launch', decided({ branch: 'home', setupComplete: true, finishTools: ['claude-code'] })), 'launch')
-    assert.equal(guardStep('workspace', decided({ branch: 'home', setupComplete: true, finishTools: ['claude-code'] })), 'workspace')
+    assert.equal(guardStep('workspace', decided({ setupComplete: true })), 'finish-setup')
+    assert.equal(guardStep('workspace', decided({ finishTools: ['claude-code'] })), 'finish-setup')
+    assert.equal(guardStep('launch', decided({ setupComplete: true, finishTools: ['claude-code'] })), 'launch')
+    assert.equal(guardStep('workspace', decided({ setupComplete: true, finishTools: ['claude-code'] })), 'workspace')
   })
 })
 
@@ -75,38 +62,31 @@ describe('choiceLocked', () => {
     assert.equal(choiceLocked(null), false)
     assert.equal(choiceLocked('waiting-for-choice'), false)
     assert.equal(choiceLocked('failed'), false)
-    for (const stage of ['home-ready', 'go-kept-existing-pro', 'go-awaiting-checkout'] as const) assert.equal(choiceLocked(stage), true)
+    for (const stage of ['home-ready', 'home-kept-existing'] as const) assert.equal(choiceLocked(stage), true)
   })
 })
 
 describe('saved storage choice', () => {
   const home = { branch: 'home' as const, memoryBilling: 'existing' as const }
-  it('defaults new installs to monthly Cloud Sync with the existing memory provider', () => {
-    assert.equal(state().branch, 'go')
-    assert.equal(state().memoryBilling, 'existing')
-    assert.equal(state().cloudSyncOffer, 'cloud_sync_monthly')
-  })
-  it('restores the annual offer while retaining legacy hosted choices without an offer', () => {
-    const annual = { branch: 'go' as const, memoryBilling: 'existing' as const, cloudSyncOffer: 'cloud_sync_annual' as const }
-    const restored = hydrateSetupChoice(state(), annual, false, 'go-awaiting-checkout')
-    assert.equal(restored.cloudSyncOffer, 'cloud_sync_annual')
-    assert.equal(restored.memoryBilling, 'existing')
-    assert.equal(nextAfterChoice(restored), 'checkout')
-    const legacy = hydrateSetupChoice(state(), { branch: 'go', memoryBilling: 'hosted' }, false, 'go-awaiting-checkout')
-    assert.equal(legacy.memoryBilling, 'hosted')
-    assert.equal(nextAfterChoice(legacy), 'checkout')
-  })
-  it('restores Home after a reload instead of submitting the default On The Go choice', () => {
+  it('restores Home after a reload instead of resubmitting a choice', () => {
     const restored = hydrateSetupChoice(state(), home, false, 'home-ready')
     assert.equal(restored.branch, 'home')
     assert.equal(restored.memoryBilling, 'existing')
-    assert.equal(nextAfterChoice(restored), 'finish-setup')
+  })
+  it('restores the stage the installer kept, including a machine whose configuration was kept', () => {
+    const restored = hydrateSetupChoice(state(), home, false, 'home-kept-existing')
+    assert.equal(restored.branch, 'home')
+  })
+  it('tolerates a legacy saved choice from an older build without throwing', () => {
+    const legacy = hydrateSetupChoice(state(), { branch: 'go', memoryBilling: 'hosted' } as unknown as Pick<SetupFlowState, 'branch' | 'memoryBilling'>, false, 'home-ready')
+    assert.equal(legacy.branch as string, 'go')
+    assert.equal(legacy.memoryBilling, 'hosted')
   })
   it('preserves a choice being edited until the worker has locked its committed choice', () => {
-    const edited = state({ branch: 'go', memoryBilling: 'hosted' })
+    const edited = state({ memoryBilling: 'hosted' })
     assert.equal(hydrateSetupChoice(edited, home, true, 'waiting-for-choice'), edited)
     assert.equal(hydrateSetupChoice(edited, home, true, 'failed'), edited)
-    assert.equal(hydrateSetupChoice(edited, home, true, 'home-ready').branch, 'home')
+    assert.equal(hydrateSetupChoice(edited, home, true, 'home-ready').memoryBilling, 'existing')
   })
 })
 
@@ -133,14 +113,9 @@ describe('step bar', () => {
     // Still on the Reveal: Memory is not ticked until its Continue.
     assert.deepEqual(states('reveal', state({ scanComplete: true })), ['done', 'current', 'upcoming', 'upcoming', 'upcoming'])
     assert.deepEqual(states('choice', state({ scanComplete: true, revealContinued: true })), ['done', 'done', 'current', 'upcoming', 'upcoming'])
-    // On The Go: Plan stays open until checkout is done.
-    assert.deepEqual(states('checkout', decided({ branch: 'go' })), ['done', 'done', 'current', 'upcoming', 'upcoming'])
-    assert.deepEqual(states('finish-setup', decided({ branch: 'go', checkoutReviewed: true })), ['done', 'done', 'done', 'current', 'upcoming'])
-    assert.deepEqual(states('finish-setup', decided({ branch: 'home' })), ['done', 'done', 'done', 'current', 'upcoming'])
-    assert.deepEqual(states('workspace', decided({ branch: 'home', setupComplete: true, finishTools: ['claude-code'] })), ['done', 'done', 'done', 'done', 'current'])
-  })
-  it('shows a step current again when the person goes back to it', () => {
-    assert.deepEqual(states('savings', decided({ branch: 'go', checkoutReviewed: true })), ['done', 'done', 'current', 'upcoming', 'upcoming'])
+    // The choice always moves on to Finish Setup, so committing it ticks Plan.
+    assert.deepEqual(states('finish-setup', decided()), ['done', 'done', 'done', 'current', 'upcoming'])
+    assert.deepEqual(states('workspace', decided({ setupComplete: true, finishTools: ['claude-code'] })), ['done', 'done', 'done', 'done', 'current'])
   })
 })
 
@@ -151,36 +126,24 @@ describe('Back', () => {
     assert.equal(previousStep('scan', state(), facts), 'install')
     assert.equal(previousStep('reveal', state({ scanComplete: true }), facts), 'scan')
     assert.equal(previousStep('choice', decided(), facts), 'reveal')
-    assert.equal(previousStep('savings', decided({ checkoutReviewed: true }), facts), 'checkout')
-    assert.equal(previousStep('checkout', decided({ branch: 'go' }), facts), 'choice')
-    assert.equal(previousStep('finish-setup', decided({ branch: 'go', checkoutReviewed: true }), facts), 'savings')
-    assert.equal(previousStep('finish-setup', decided({ branch: 'home' }), facts), 'choice')
-    assert.equal(previousStep('finish-setup', decided({ branch: 'go', alreadyPro: true }), facts), 'choice')
+    assert.equal(previousStep('finish-setup', decided(), facts), 'choice')
     // Launch only plays forward, so Back from it or from the last screen returns to Finish Setup.
     for (const step of ['import', 'launch', 'workspace'] as const) assert.equal(previousStep(step, decided(), facts), 'finish-setup')
   })
   it('treats the scan as the first screen when this run had no install screen', () => {
     assert.equal(previousStep('scan', state(), { hasInstallStep: false, choiceLocked: false }), null)
   })
-  it('keeps applied Home and existing plans out of the hosted offer', () => {
-    assert.equal(previousStep('finish-setup', decided({ branch: 'home' }), { hasInstallStep: true, choiceLocked: true }), null)
-    assert.equal(previousStep('finish-setup', decided({ alreadyPro: true }), { hasInstallStep: true, choiceLocked: true }), null)
-    assert.equal(previousStep('finish-setup', decided({ memoryBilling: 'hosted', checkoutReviewed: true }), facts), 'checkout')
-  })
-  it('returns to a confirmed receipt without making the committed plan editable', () => {
+  it('keeps a committed choice from being edited again, on its screen and the legacy ones', () => {
     const locked = { hasInstallStep: true, choiceLocked: true }
-    assert.equal(previousStep('savings', decided({ checkoutReviewed: true }), locked), 'checkout')
+    assert.equal(previousStep('finish-setup', decided(), locked), null)
     assert.equal(previousStep('checkout', decided(), locked), null)
   })
   it('lands on a screen guardStep shows, so Back never bounces', () => {
     const paths: Array<[SetupStep, SetupFlowState]> = [
       ['reveal', state({ scanComplete: true })],
       ['choice', state({ scanComplete: true, revealContinued: true })],
-      ['savings', decided({ checkoutReviewed: true })],
-      ['checkout', decided({ branch: 'go' })],
-      ['finish-setup', decided({ branch: 'go', checkoutReviewed: true })],
-      ['finish-setup', decided({ branch: 'home' })],
-      ['workspace', decided({ branch: 'home', setupComplete: true, finishTools: ['claude-code'] })],
+      ['finish-setup', decided()],
+      ['workspace', decided({ setupComplete: true, finishTools: ['claude-code'] })],
     ]
     for (const [step, flow] of paths) {
       const target = previousStep(step, flow, facts)!

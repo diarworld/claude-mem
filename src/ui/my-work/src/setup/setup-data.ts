@@ -7,7 +7,7 @@ import { choiceLocked } from './setup-flow'
 import { revealFromSnapshot, type SnapshotWithSetup, type WorkerExtraction } from './setup-reveal'
 import { noteFor, searchUrl, toMemoryResults, type MemoryResult, type WorkerSearchResult } from './setup-search'
 import { applySseFrame } from '../live/parse-sse-frame'
-import { HISTORY_IMPORT_RUN_STATES, INTENT_MAX_UPLOAD_BYTES, type HistoryImportRunState, type SetupBranch, type SetupCheckoutState, type SetupCloudSyncOffer, type SetupEvent, type SetupMemoryBilling, type SetupScanPhase, type SetupStatus } from '../../../../shared/setup-funnel.ts'
+import { HISTORY_IMPORT_RUN_STATES, INTENT_MAX_UPLOAD_BYTES, type HistoryImportRunState, type SetupBranch, type SetupEvent, type SetupMemoryBilling, type SetupScanPhase, type SetupStatus } from '../../../../shared/setup-funnel.ts'
 import { hasPendingInstallSetup, type SetupInstallSelection, type SetupInstallState } from '../../../../shared/setup-install.ts'
 
 /** Mirrors the worker's SetupScanState (src/services/prompt-import/setup-scan.ts), trimmed to what the screen shows. */
@@ -43,8 +43,6 @@ export interface SetupScanView {
 /** The owner's newest typed prompts, quoted as typed (SetupScanState.recentPrompts). */
 export interface SetupRecentPrompt { agent: string; at: string; text: string }
 /** The worker's subsidized hosted setup extraction. */
-/** On The Go checkout, mirrored from the installer that runs it (`null` until the page asks). */
-export interface SetupCheckoutView { state: SetupCheckoutState; error: string | null }
 /** What the installer did with the choice. A failed handoff can be retried from the setup page. */
 export interface SetupInstallerView { stage: InstallerStage; error: string | null }
 export type SetupExtraction = Pick<WorkerExtraction, 'state' | 'step'>
@@ -112,7 +110,6 @@ export interface SetupData {
   /** `null` until the worker reports a run. Older workers may still report waiting-for-agent. */
   extraction: SetupExtraction | null
   recentPrompts: SetupRecentPrompt[]
-  checkout: SetupCheckoutView | null
   /** `null` until an installer reports. */
   installer: SetupInstallerView | null
   usage: SetupUsage | null
@@ -127,7 +124,7 @@ export interface SetupData {
 }
 
 /** The storage plan explicitly selected in the installer. */
-export interface SetupChoice { branch: SetupBranch; memoryBilling: SetupMemoryBilling; cloudSyncOffer?: SetupCloudSyncOffer; shareWorkView?: true }
+export interface SetupChoice { branch: SetupBranch; memoryBilling: SetupMemoryBilling }
 
 export interface SetupSource {
   readonly kind: 'local' | 'sample'
@@ -142,9 +139,7 @@ export interface SetupSource {
   /** Answers the upload question: true sends the scanned prompts to cmem.ai, false keeps them on this machine. */
   confirmUpload(upload: boolean, agents?: string[], improveProduct?: boolean): Promise<void>
   /** Hands the storage choice to the installer waiting in the terminal (POST /api/setup/choice). */
-  choose(choice: SetupChoice, openCheckout?: boolean): Promise<void>
-  /** Asks the installer holding the On The Go sign-in to open checkout (POST /api/setup/checkout). */
-  checkout(): Promise<void>
+  choose(choice: SetupChoice): Promise<void>
   /** Finishes setup for this machine with the tools picked on Finish Setup; the terminal exits (POST /api/setup/complete). */
   complete(tools: string[], telemetry?: SetupEvent[]): Promise<void>
   /** Uploads this machine's observations to the CMEM account (POST /api/setup/import). Only the person's press calls it. */
@@ -167,7 +162,6 @@ export const EMPTY_SETUP_DATA: SetupData = {
   reveal: { goals: null, work: null, rules: null, focusAreas: null, requests: [], requestReadErrorCount: 0 },
   extraction: null,
   recentPrompts: [],
-  checkout: null,
   installer: null,
   usage: null,
   alreadyPro: false,
@@ -205,7 +199,7 @@ interface WorkerHistoryImport { state: HistoryImportRunState; percent: number; i
 interface WorkerSetupState {
   choice?: SetupData['choice']
   install?: SetupInstallState | null
-  status: SetupStatus; alreadyPro: boolean; checkout?: SetupCheckoutView | null
+  status: SetupStatus; alreadyPro: boolean
   installer?: SetupInstallerView | null
   history?: SetupHistory | null; historyImport?: WorkerHistoryImport | null
 }
@@ -306,7 +300,6 @@ export const localSetupSource: SetupSource = {
       usage: state.choice?.usage ?? liveUsage,
       install: state.install ?? null,
       alreadyPro: state.alreadyPro,
-      checkout: state.checkout ? { state: state.checkout.state, error: state.checkout.error } : null,
       installer: state.installer ? { stage: state.installer.stage, error: state.installer.error } : null,
       // Nothing to bring along on a new install: the import offer stays hidden.
       history: state.history && state.history.observations > 0 ? state.history : null,
@@ -356,7 +349,7 @@ export const localSetupSource: SetupSource = {
     let startingScan = false
     const ensureScanStarted = async () => {
       if (!initialScanLoaded || startingScan || closed || data.scan.phase !== 'idle'
-        || (data.choice && choiceLocked(data.installer?.stage, !!data.checkout))
+        || (data.choice && choiceLocked(data.installer?.stage))
         || data.install === undefined || (data.install && data.install.status !== 'ready')) return
       startingScan = true
       try { await startScan() }
@@ -445,8 +438,7 @@ export const localSetupSource: SetupSource = {
     await write
   },
   async confirmUpload(upload, agents, improveProduct) { await postJson('/api/setup/scan/consent', { upload, ...(agents ? { agents } : {}), ...(improveProduct === undefined ? {} : { improveProduct }) }) },
-  async choose(choice, openCheckout) { await postJson('/api/setup/choice', { ...choice, ...(openCheckout ? { openCheckout: true } : {}) }) },
-  async checkout() { await postJson('/api/setup/checkout', {}) },
+  async choose(choice) { await postJson('/api/setup/choice', choice) },
   async complete(tools, telemetry) { await postJson('/api/setup/complete', { tools, ...(telemetry?.length ? { telemetry } : {}) }) },
   async startHistoryImport() { await askImport('/api/setup/import') },
   async stopHistoryImport() { await askImport('/api/setup/import/stop') },
@@ -459,9 +451,6 @@ export const localSetupSource: SetupSource = {
   },
   async forgetNote(id) { await workerJson(`/api/observation/${id}`, { method: 'DELETE' }) },
 }
-
-/** D6 plan prices, in cents. Plan prices only, never per-run spend. */
-export const PLAN = { name: 'CMEM Pro', monthlyCents: 3000, cloudSyncCents: 1200 } as const
 
 export { CMEM_MCP_URL, SETUP_TOOLS, type SetupTool } from './agent-connections'
 

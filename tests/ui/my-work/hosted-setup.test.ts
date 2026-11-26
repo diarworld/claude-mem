@@ -316,17 +316,18 @@ describe('hosted setup scan control', () => {
     expect(app.renderReveal(agents, { goals: null, work: null, rules: null }, { state: 'running', step: 'goals' }, ['codex'])).toContain('Your recent work');
   });
 
-  it('shows installed agents and the trial on a completed empty scan, and preserves saved or unreadable work', () => {
+  it('shows installed agents on a completed empty scan, and preserves saved or unreadable work', () => {
     const app = fixture();
-    const ready = { scanComplete: true, installedAgentCount: 6, onStartTrial: () => {} };
+    const ready = { scanComplete: true, installedAgentCount: 6 };
     const empty = { goals: [], work: [], rules: [], focusAreas: [], requests: [] };
     const render = (reveal: RevealSets = empty, state = 'ok', options = ready) =>
       app.renderReveal([], reveal, { state, step: null }, [], null, false, options);
     expect(render()).toContain('6 agents are set up');
     expect(render(empty, 'ok', { ...ready, installedAgentCount: 1 })).toContain('1 agent is set up');
-    expect(render()).toContain('Try Cloud Sync free for 30 days');
-    expect(render()).toContain('No card needed for your first 30 days.');
-    expect(render()).toContain('Continue for $12/month if you choose.');
+    // The hosted trial CTA left with the checkout funnel: a completed empty scan only offers Continue.
+    expect(render()).toContain('Continue');
+    expect(render()).not.toContain('Try Cloud Sync free for 30 days');
+    expect(render()).not.toContain('No card needed for your first 30 days.');
     expect(render()).not.toContain('No focus areas found');
     expect(render()).not.toContain('What else came through');
     expect(render({ ...empty, focusAreas: app.SAMPLE_FOCUS_AREAS })).toContain('Your recent work');
@@ -633,12 +634,12 @@ describe('setup failures in plain words', () => {
   it('tells a request that got no answer from one the worker refused, and never credits the worker with a page error', async () => {
     const app = fixture();
     useNetwork(() => { throw new TypeError('Failed to fetch'); });
-    expect(await failureOf(app, () => app.localSetupSource.choose({ branch: 'go', memoryBilling: 'hosted' }))).toEqual({ kind: 'unreachable', detail: 'Failed to fetch' });
+    expect(await failureOf(app, () => app.localSetupSource.choose({ branch: 'home', memoryBilling: 'existing' }))).toEqual({ kind: 'unreachable', detail: 'Failed to fetch' });
     useNetwork(() => Response.json({ error: 'The installer already applied the earlier choice.' }, { status: 409 }));
     expect(await failureOf(app, () => app.localSetupSource.choose({ branch: 'home', memoryBilling: 'existing' }))).toEqual({ kind: 'refused', detail: 'The installer already applied the earlier choice.' });
     // A refusal without a JSON reason still names the status, under Details.
     useNetwork(() => new Response('Bad gateway', { status: 502 }));
-    expect(await failureOf(app, () => app.localSetupSource.checkout())).toEqual({ kind: 'refused', detail: 'The worker answered 502 for /api/setup/checkout.' });
+    expect(await failureOf(app, () => app.localSetupSource.resume())).toEqual({ kind: 'refused', detail: 'The worker answered 502 for /api/setup/resume.' });
     // An answer without a saved note is a refusal too.
     useNetwork(() => Response.json({ success: false, reason: 'Text is empty.' }));
     expect((await failureOf(app, () => app.localSetupSource.keepNote({ id: 'm1', title: 'T', body: 'B', project: 'p', agent: 'a', session: 's', date: '2026-10-21' }, 'text'))).kind).toBe('refused');

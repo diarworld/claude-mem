@@ -5,7 +5,7 @@ import { INITIAL_SETUP_STATE, type SetupStateView } from '../../src/shared/setup
 
 for (const source of ['browser', 'printed URL'] as const) {
   test(`keeps a choice submitted immediately from the ${source}`, async () => {
-    const choice = { branch: 'go' as const, memoryBilling: 'hosted' as const, chosenAt: 'new choice' };
+    const choice = { branch: 'home' as const, memoryBilling: 'existing' as const, chosenAt: 'new choice' };
     let state: SetupStateView = {
       ...INITIAL_SETUP_STATE,
       alreadyPro: false,

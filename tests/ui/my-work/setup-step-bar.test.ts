@@ -15,8 +15,6 @@ const compiled = buildSync({
       import { ScanScreen } from './src/setup/screens/scan-screen';
       import { RevealScreen } from './src/setup/screens/reveal-screen';
       import { ChoiceScreen } from './src/setup/screens/choice-screen';
-      import { SavingsScreen } from './src/setup/screens/savings-screen';
-      import { CheckoutScreen } from './src/setup/screens/checkout-screen';
       import { FinishSetupScreen } from './src/setup/screens/finish-setup-screen';
       import { ImportScreen } from './src/setup/screens/import-screen';
       import { LaunchScreen } from './src/setup/screens/launch-screen';
@@ -29,15 +27,12 @@ const compiled = buildSync({
       export { HISTORY_IMPORT_RUN_STATES } from '../../shared/setup-funnel';
       export const renderImport = (progress, stopping = false) => renderToStaticMarkup(<ImportScreen progress={progress} back={{ onBack: noop, waitsFor: 'import' }} stopping={stopping} onStop={noop} />);
       const history = { projects: 3, sessions: 24, observations: 128 };
-      export const renderHistoryPanel = (importResult, importStatus = 'available', stoppingImport = false) => renderToStaticMarkup(<FinishSetupScreen branch="go" tools={[]} selected={[]} onSelect={noop} history={history} importStatus={importStatus} importResult={importResult} stoppingImport={stoppingImport} onImport={noop} onStopImport={noop} back={null} onContinue={noop} />);
+      export const renderHistoryPanel = (importResult, importStatus = 'available', stoppingImport = false) => renderToStaticMarkup(<FinishSetupScreen tools={[]} selected={[]} onSelect={noop} history={history} importStatus={importStatus} importResult={importResult} stoppingImport={stoppingImport} onImport={noop} onStopImport={noop} back={null} onContinue={noop} />);
       export const renderBar = (step, flow) => renderToStaticMarkup(<SetupStepBar step={step} flow={flow} />);
       export const renderMark = (id, name) => renderToStaticMarkup(<ToolMark id={id} name={name} />);
       const noop = () => {};
       const scan = (phase) => ({ agents: [], percent: 40, phase, done: phase === 'done', error: phase === 'failed' ? 'Failed to fetch' : null, improveProduct: true, uploadedAgents: null });
       export const renderScan = (phase, { retrying = false, back = null } = {}) => renderToStaticMarkup(<ScanScreen scan={scan(phase)} back={back} onImproveProductChange={noop} onConfirmUpload={noop} preferenceError={null} onRetry={noop} retrying={retrying} retryError={null} onSkip={noop} onContinue={noop} />);
-      export const renderCheckout = (checkout, asked, offer = {}) => renderToStaticMarkup(<CheckoutScreen checkout={checkout} asked={asked} installerStopped={false} back={{ onBack: noop, waitsFor: null }} onOpen={noop} onContinue={noop} {...offer} />);
-      export const renderExistingCloudPlan = () => renderToStaticMarkup(<ChoiceScreen branch="go" alreadyPro onChoose={noop} />);
-      export const renderHostedOffer = usage => renderToStaticMarkup(<SavingsScreen usage={usage} onViewPlans={noop} onContinue={noop} />);
       export const renderReveal = (reveal) => renderToStaticMarkup(<RevealScreen agents={[]} reveal={reveal} extraction={{ state: 'ok', step: null }} uploadedAgents={['codex']} recentPrompts={[]} onContinue={noop} />);
       const install = { status: 'ready', error: null, selection: { agents: ['cursor'], skills: [], installClaudeCode: false, disableAutoMemory: false, telemetryEnabled: true },
         catalog: { agents: [{ id: 'cursor', label: 'Cursor', hint: '', detected: true }], skills: [], reinstall: false,
@@ -47,10 +42,8 @@ const compiled = buildSync({
         install: renderToStaticMarkup(<InstallScreen install={install} onInstall={async () => {}} onContinue={noop} />),
         scan: renderToStaticMarkup(<ScanScreen scan={scan(scanPhase)} back={back} onImproveProductChange={noop} onConfirmUpload={noop} preferenceError={null} onRetry={noop} retrying={false} retryError={null} onSkip={noop} onContinue={noop} />),
         reveal: renderToStaticMarkup(<RevealScreen agents={[]} reveal={{ goals: [], work: [], rules: [], focusAreas: SAMPLE_FOCUS_AREAS, requests: SAMPLE_REQUESTS }} extraction={{ state: 'ok', step: null }} uploadedAgents={['codex']} recentPrompts={[]} back={back} onContinue={noop} />),
-        choice: renderToStaticMarkup(<ChoiceScreen branch="go" back={back} onChoose={noop} />),
-        savings: renderToStaticMarkup(<SavingsScreen usage={null} back={back} onContinue={noop} onViewPlans={noop} />),
-        checkout: renderToStaticMarkup(<CheckoutScreen checkout={null} asked={false} installerStopped={false} back={back} onOpen={noop} onContinue={noop} />),
-        'finish-setup': renderToStaticMarkup(<FinishSetupScreen branch="go" tools={[tool]} selected={['chatgpt']} onSelect={noop} history={null} importStatus="none" importResult={null} stoppingImport={false} onImport={noop} onStopImport={noop} back={back} onContinue={noop} />),
+        choice: renderToStaticMarkup(<ChoiceScreen branch="home" back={back} onChoose={noop} />),
+        'finish-setup': renderToStaticMarkup(<FinishSetupScreen tools={[tool]} selected={['chatgpt']} onSelect={noop} history={null} importStatus="none" importResult={null} stoppingImport={false} onImport={noop} onStopImport={noop} back={back} onContinue={noop} />),
         import: renderToStaticMarkup(<ImportScreen progress={{ state: 'running', percent: 48, imported: 61, error: null, sent: 61, total: 128 }} back={back} stopping={false} onStop={noop} />),
         launch: renderToStaticMarkup(<LaunchScreen tools={[tool]} back={back} onDone={noop} />),
         workspace: renderToStaticMarkup(<WorkspaceScreen suggestions={[]} back={back} search={async () => []} keepNote={async () => 1} forgetNote={async () => {}} onContinue={noop} />),
@@ -110,11 +103,9 @@ describe('setup bottom row Back', () => {
 
   it('is on every screen but the first, in one style, before the forward buttons', () => {
     const screens = app.renderScreens(back);
-    const [first, ...rest] = app.SETUP_STEPS as string[];
-    expect(backButton(screens[first])).toBeNull();
-    for (const step of rest) {
-      const html = screens[step];
+    for (const [step, html] of Object.entries(screens as Record<string, string>)) {
       const button = backButton(html);
+      if (step === 'install') { expect(button, step).toBeNull(); continue; }
       expect(button, step).not.toBeNull();
       expect(button!, step).toContain('>Back</button>');
       expect(button!, step).toContain('text-action setup-back');
@@ -187,82 +178,6 @@ describe('setup scan bottom row', () => {
   });
 });
 
-describe('setup checkout', () => {
-  it('uses measured tokens from the finished scan and leaves incomplete or missing usage identifiable', () => {
-    const base = { periodLabel: 'Last 30 days · Codex', tokens: 12345, persona: null, efficiencyPercent: null };
-    const whole = app.renderHostedOffer({ ...base, coverage: 'complete' });
-    expect(whole).toContain('12,345 tokens');
-    expect(whole).toContain('Last 30 days · Codex');
-    expect(whole).toContain('href="https://cmem.ai/work"');
-    expect(whole).toContain('https://cmem.ai/hosted-tokens');
-    expect(whole).toContain('Continue setup');
-    expect(app.renderHostedOffer({ ...base, coverage: 'partial' })).toContain('At least 12,345 recorded tokens');
-    expect(app.renderHostedOffer(null)).toContain('No token count is available');
-  });
-  const buttons = (html: string) => [...html.matchAll(/<button[^>]*>([\s\S]*?)<\/button>/g)].map(([, body]) => body.replace(/<[^>]+>/g, '').trim()).filter(Boolean);
-  it('keeps an existing Cloud or Pro configuration without offering a new subscription', () => {
-    const html = app.renderExistingCloudPlan();
-    expect(html).toContain('Keep your existing plan');
-    expect(html).not.toContain('Continue to Cloud Sync checkout');
-    expect(html).not.toContain('name="cloud-sync-offer"');
-    expect(html).not.toContain('$99');
-    expect(html).not.toContain('$12');
-  });
-  it('discloses a full monthly Cloud trial while keeping hosted token billing separate', () => {
-    const html = app.renderCheckout(null, false);
-    expect(html).toContain('Cloud Sync');
-    expect(html).toContain('Due today for your first trial</dt><dd>$0');
-    expect(html).toContain('$12 / month');
-    expect(html).toContain('If you continue after 30 days');
-    expect(html).not.toContain('Secure checkout with Stripe');
-    expect(html).toContain('No card needed for your first trial.');
-    expect(html).not.toContain('href="https://cmem.ai/hosted-tokens"');
-    expect(html).not.toContain('included usage runs out');
-    expect(html).not.toContain('$30');
-  });
-
-  it('discloses the annual charge now and keeps saved bundled choices compatible', () => {
-    const annual = app.renderCheckout(null, false, { cloudSyncOffer: 'cloud_sync_annual' });
-    expect(annual).toContain('Due today</dt><dd>$99');
-    expect(annual).toContain('$99 / year');
-    expect(annual).toContain('No trial.');
-    expect(annual).toContain('A card is required.');
-    expect(annual).toContain('Secure checkout with Stripe');
-    expect(annual).not.toContain('30 days');
-    expect(annual).not.toContain('$12');
-    const legacy = app.renderCheckout(null, false, { legacyHosted: true });
-    expect(legacy).toContain('CMEM Pro · Cloud Sync included');
-    expect(legacy).toContain('$30 / month');
-    expect(legacy).toContain('A card is required.');
-    expect(legacy).toContain('Billing starts on your renewal date unless you cancel.');
-    expect(legacy).toContain('hosted generation pauses');
-    expect(legacy).toContain('your configured backup provider');
-    expect(legacy).not.toContain('automatically upgrades');
-    expect(legacy).not.toContain('Overages are billed');
-    expect(legacy).not.toContain('Your Cloud Sync trial lasts a full 30 days.');
-  });
-  it('shows a pending handoff and allows an explicit reopen once checkout is running', () => {
-    const asked = app.renderCheckout(null, true);
-    expect(asked).toContain('Opening Cloud Sync…');
-    expect(asked).toContain('data-slot="spinner"');
-    expect(buttons(asked)).toContain('Opening Cloud Sync…');
-    expect(buttons(app.renderCheckout({ state: 'waiting', error: null }, false))).toContain('Reopen Cloud Sync setup');
-    const fresh = app.renderCheckout(null, false);
-    expect(fresh).not.toContain('Waiting for this device to connect…');
-    expect(buttons(fresh)).toContain('Open Cloud Sync setup');
-  });
-
-  it('goes on from a paid checkout without asking for checkout again', () => {
-    const paid = app.renderCheckout({ state: 'paid', error: null }, true);
-    expect(paid).toContain('Cloud Sync connected.');
-    // The one way on is Continue (the page wires it to Finish Setup); nothing on the screen opens checkout again.
-    expect(buttons(paid)).not.toContain('Reopen Cloud Sync setup');
-    expect(buttons(paid)).not.toContain('Open Cloud Sync setup');
-    expect(buttons(paid)).toContain('Back');
-    expect(navyButtons(paid)).toHaveLength(1);
-    expect(paid.match(/<button[^>]*class="[^"]*\bprimary\b[^"]*"[^>]*>([\s\S]*?)<\/button>/)?.[1].replace(/<[^>]+>/g, '').trim()).toBe('Continue');
-  });
-});
 
 describe('setup reveal rows', () => {
   const reveal = (requests = app.SAMPLE_REQUESTS) => app.renderReveal({ goals: [], work: [], rules: [], focusAreas: app.SAMPLE_FOCUS_AREAS, requests }) as string;

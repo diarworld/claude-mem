@@ -4,8 +4,8 @@ import { SaveButton } from '@/components/save-button'
 import { Collapsible, CollapsibleContent, CollapsibleFoldTrigger } from '@/components/ui/collapsible'
 import { interpolate, useI18n } from '@/lib/i18n'
 import { CMEM_MCP_URL, type HistoryImportProgress, type SetupHistory, type SetupTool } from '../setup-data'
-import type { HistoryImportStatus, MemoryBranch } from '../setup-flow'
-import { PageHeading, PrivateWorkViewLink, SetupActions, SetupButton, SetupError, ToolMark, type SetupBack } from './shared'
+import type { HistoryImportStatus } from '../setup-flow'
+import { PageHeading, SetupActions, SetupButton, SetupError, ToolMark, type SetupBack } from './shared'
 
 function CopyUrl({ toolName }: { toolName: string }) {
   const { t } = useI18n()
@@ -159,8 +159,7 @@ function HistoryPanel({ history, status, result, stopping, onImport, onStop }: {
  * Step 6 (PROTO #route-finish-setup). Tools the install step connected are listed as connected; the others can be
  * added with a tick (E8). Detected tools come pre-ticked; the import panel shows only when there is history to import.
  */
-export function FinishSetupScreen({ branch, tools, selected, onSelect, history, importStatus, importResult, stoppingImport, onImport, onStopImport, back, onContinue }: {
-  branch: MemoryBranch
+export function FinishSetupScreen({ tools, selected, onSelect, history, importStatus, importResult, stoppingImport, onImport, onStopImport, back, onContinue }: {
   tools: SetupTool[]
   selected: string[]
   onSelect: (selected: string[]) => void
@@ -198,7 +197,6 @@ export function FinishSetupScreen({ branch, tools, selected, onSelect, history, 
   return (
     <section aria-labelledby="finish-setup-title">
       <PageHeading id="finish-setup-title" title={t('Connect your tools')} />
-      {branch === 'go' && <PrivateWorkViewLink />}
       <form onSubmit={submit} noValidate>
         <div className={history ? 'finish-grid has-history' : 'finish-grid'}>
           <div className="panel finish-tools">
@@ -227,7 +225,7 @@ export function FinishSetupScreen({ branch, tools, selected, onSelect, history, 
               </>}
             </fieldset>
             {showError && <p className="tool-error" role="alert">{t('Select at least one tool to continue.')}</p>}
-            {branch === 'go' && picked.length > 0 && (
+            {picked.length > 0 && (
               <div className="connections" aria-label={t('Selected tool connections')}>
                 {picked.map((tool, index, list) => <Connection key={tool.id} tool={tool} open={index === list.length - 1} />)}
               </div>

@@ -4,13 +4,13 @@
 // `&scan=<percent>` holds the scan at that percent, for screenshots.
 // `&usage=partial|none` shows an incomplete or missing usage history (default: a complete 30-day window).
 // `&scan=consent|failed` stops the scan at the upload question or at a failure (each retry or answer then goes on).
-// `&fail=install|checkout|import|installer|choice|stop` makes that hand-off fail once, so its error can be seen; the retry
+// `&fail=install|import|installer|choice|stop` makes that hand-off fail once, so its error can be seen; the retry
 // works. `choice` is the worker refusing the storage choice and `stop` is Stop import getting no answer (hand-off alerts);
 // `import` is cmem.ai refusing the run's last batch; the others are reports from the installer.
 // `&installer=on` plays the installer applying the storage choice, as the terminal does, so the choice locks after it.
 // `&import=running` plays a page reloaded while an import runs: the worker already reports one running, held after its
 // first batch until the person stops it, for screenshots of Finish Setup's "An import is already running.".
-import { SetupRequestError, type HistoryImportProgress, type MemoryResult, type SetupChoice, type SetupData, type SetupSource } from './setup-data'
+import { SetupRequestError, type HistoryImportProgress, type MemoryResult, type SetupData, type SetupSource } from './setup-data'
 import type { InstallerStage } from './setup-flow'
 import { toSetupUsage, type SetupScanUsage } from './setup-usage'
 import { SAMPLE_REQUESTS } from '../data'
@@ -65,12 +65,11 @@ export type SampleUsage = 'complete' | 'partial' | 'none'
 /** Where `&scan=` stops the sample scan instead of finishing it. */
 export type SampleScanStop = 'consent' | 'failed'
 /** Which hand-off `&fail=` makes fail once. */
-export type SampleFailure = 'install' | 'checkout' | 'import' | 'installer' | 'choice' | 'stop'
+export type SampleFailure = 'install' | 'import' | 'installer' | 'choice' | 'stop'
 /** Invented failure words for the sample, shaped like the worker's own. */
 const SAMPLE_FAILURE_WORDS: Record<SampleFailure | 'scan', string> = {
   scan: 'Hosted setup failed (HTTP 503): The anonymous daily budget has been reached.',
   install: 'Cursor configuration could not be saved.',
-  checkout: 'The checkout tab was closed before the card was added.',
   import: 'cmem.ai refused the import (HTTP 503).',
   installer: 'The setup program stopped (exit 1). Retry setup in this page, or run npx claude-mem install --setup browser.',
   choice: 'The installer is not waiting for a storage choice yet.',
@@ -81,8 +80,7 @@ const SAMPLE_FAILURE_WORDS: Record<SampleFailure | 'scan', string> = {
 const NOTHING_TO_STOP = 'No import is running, so there is nothing to stop.'
 
 /** What the sample installer reports once it has applied a storage choice (the stages the real one reports). */
-const appliedStage = (branch: SetupChoice['branch'], alreadyPro: boolean): InstallerStage =>
-  branch === 'home' ? 'home-ready' : alreadyPro ? 'go-kept-existing-pro' : 'go-awaiting-checkout'
+const appliedStage = (): InstallerStage => 'home-ready'
 
 function sampleUsage(kind: SampleUsage, newInstall: boolean): SetupScanUsage {
   const agents = [
@@ -130,7 +128,6 @@ function sampleData(newInstall: boolean, usage: SampleUsage, waitingForAgent: bo
     reveal: { goals: null, work: null, rules: null, focusAreas: null, requests: [] },
     extraction: waitingForAgent ? { state: 'waiting-for-agent', step: null } : null,
     recentPrompts: RECENT_PROMPTS,
-    checkout: null,
     installer: fail === 'installer' ? { stage: 'failed', error: SAMPLE_FAILURE_WORDS.installer } : installer ? { stage: 'waiting-for-choice', error: null } : null,
     usage: toSetupUsage(sampleUsage(usage, newInstall)),
     alreadyPro: false,
@@ -239,16 +236,9 @@ export function createSampleSetupSource(newInstall: boolean, holdScanAtPercent: 
     async setImproveProduct(improveProduct) { publish({ scan: { ...data.scan, improveProduct } }) },
     // Review fixtures hand nothing to an installer; with `&installer=on` the sample one applies the choice, as the
     // terminal does, which locks it (the page then offers no way back to change it).
-    async choose(choice, openCheckout) {
+    async choose(choice) {
       if (failsOnce('choice')) throw new SetupRequestError('refused', SAMPLE_FAILURE_WORDS.choice)
-      publish({ choice, ...(installer ? { installer: { stage: appliedStage(choice.branch, data.alreadyPro), error: null } } : {}) })
-      if (openCheckout) await this.checkout()
-    },
-    // Plays the checkout the terminal would open: waiting, then paid.
-    async checkout() {
-      publish({ checkout: { state: 'waiting', error: null } })
-      const failed = failsOnce('checkout')
-      setTimeout(() => publish({ checkout: failed ? { state: 'failed', error: SAMPLE_FAILURE_WORDS.checkout } : { state: 'paid', error: null } }), 1500)
+      publish({ choice, ...(installer ? { installer: { stage: appliedStage(), error: null } } : {}) })
     },
     async complete() {},
     async startHistoryImport() {

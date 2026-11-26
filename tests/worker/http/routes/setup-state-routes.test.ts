@@ -100,17 +100,16 @@ describe('setup state endpoints', () => {
     expect((await post('/api/setup/complete', { tools: ['codex-cli'] })).status).toBe(200);
   });
 
-  it('requires the selected provider and paid checkout to finish On The Go setup', async () => {
+  it('requires the installer to have applied the home choice before setup completes', async () => {
     await start();
-    await post('/api/setup/choice', { branch: 'go', memoryBilling: 'hosted' });
-    for (const stage of ['waiting-for-choice', 'failed', 'home-ready', 'go-awaiting-checkout']) {
+    for (const [stage, expected] of [
+      ['waiting-for-choice', 409], ['failed', 409], ['home-kept-existing', 200], ['home-ready', 200],
+    ] as const) {
+      rmSync(statePath, { force: true });
+      expect((await post('/api/setup/choice', { branch: 'home', memoryBilling: 'existing' })).status).toBe(200);
       await post('/api/setup/installer', { stage });
-      // waiting-for-choice resets the choice, so submit it again when needed.
-      if (!(await state()).choice) await post('/api/setup/choice', { branch: 'go', memoryBilling: 'hosted' });
-      expect((await post('/api/setup/complete', {})).status).toBe(409);
+      expect((await post('/api/setup/complete', {})).status, stage).toBe(expected);
     }
-    await post('/api/setup/installer', { stage: 'go-awaiting-checkout', checkout: 'paid' });
-    expect((await post('/api/setup/complete', {})).status).toBe(200);
   });
 
   it('never serves the signup email or note, and keeps them on disk for a retry until the install is ready', async () => {
@@ -270,7 +269,7 @@ describe('setup state endpoints', () => {
 
   it('start pending on a machine that never finished setup, with nothing pre-selected', async () => {
     await start();
-    expect(await state()).toEqual({ status: 'pending', choice: null, installer: null, checkout: null, tools: null, completedAt: null, alreadyPro: false, history: { projects: 0, sessions: 0, observations: 0 }, historyImport: null, backgroundWorkRunning: [] });
+    expect(await state()).toEqual({ status: 'pending', choice: null, installer: null, tools: null, completedAt: null, alreadyPro: false, history: { projects: 0, sessions: 0, observations: 0 }, historyImport: null, backgroundWorkRunning: [] });
     expect(existsSync(statePath)).toBe(false);
   });
 
@@ -402,7 +401,7 @@ describe('setup state endpoints', () => {
     expect(response.status).toBe(500);
   });
 
-  it('report an existing CMEM Pro configuration so On The Go is pre-selected', async () => {
+  it('reports an existing Pro configuration so the funnel keeps it (the skip-choice flow itself is Task 7)', async () => {
     writeFileSync(settingsPath, JSON.stringify({ env: {
       CLAUDE_MEM_CLOUD_SYNC_TOKEN: 'token', CLAUDE_MEM_CLOUD_SYNC_USER_ID: 'user', CLAUDE_MEM_CLOUD_SYNC_HUB_URL: 'https://hub.example',
     } }));
@@ -410,92 +409,28 @@ describe('setup state endpoints', () => {
     expect((await state()).alreadyPro).toBe(true);
   });
 
-  it('accept only well-formed choices from the viewer page', async () => {
+  it('accept only well-formed home choices from the viewer page', async () => {
     await start();
     expect((await post('/api/setup/choice', { branch: 'home', memoryBilling: 'existing' }, { 'Content-Type': 'application/json', Origin: 'https://evil.example' })).status).toBe(403);
-    expect((await post('/api/setup/choice', { branch: 'away', memoryBilling: 'hosted' })).status).toBe(400);
-    expect((await post('/api/setup/choice', { branch: 'go', memoryBilling: 'existing', cloudSyncOffer: 'free' })).status).toBe(400);
+    expect((await post('/api/setup/choice', { branch: 'away', memoryBilling: 'existing' })).status).toBe(400);
+    // The hosted branch left the wire with the local-only funnel: even a well-formed go choice is refused.
+    expect((await post('/api/setup/choice', { branch: 'go', memoryBilling: 'existing' })).status).toBe(400);
     expect((await post('/api/setup/choice', { branch: 'home', memoryBilling: 'existing', cloudSyncOffer: 'cloud_sync_monthly' })).status).toBe(400);
-    expect((await post('/api/setup/choice', { branch: 'go', memoryBilling: 'hosted', cloudSyncOffer: 'cloud_sync_monthly' })).status).toBe(400);
+    expect((await post('/api/setup/choice', { branch: 'home', memoryBilling: 'existing', shareWorkView: true })).status).toBe(400);
+    expect((await post('/api/setup/choice', { branch: 'home', memoryBilling: 'existing', openCheckout: true })).status).toBe(400);
     expect((await state()).choice).toBeNull();
   });
 
-  it('defaults own-provider Cloud Sync to monthly, persists annual, and locks the chosen offer', async () => {
+  it('saves the home choice to disk and locks it once the installer applied it', async () => {
     await start();
     await post('/api/setup/installer', { stage: 'waiting-for-choice' });
-    expect((await post('/api/setup/choice', { branch: 'go', memoryBilling: 'existing' })).status).toBe(200);
-    expect((await state()).choice).toMatchObject({ branch: 'go', memoryBilling: 'existing', cloudSyncOffer: 'cloud_sync_monthly' });
-    const annual = { branch: 'go', memoryBilling: 'existing', cloudSyncOffer: 'cloud_sync_annual' };
-    expect((await post('/api/setup/choice', annual)).status).toBe(200);
-    expect(JSON.parse(readFileSync(statePath, 'utf8')).choice).toMatchObject(annual);
-    await post('/api/setup/installer', { stage: 'go-awaiting-checkout' });
-    expect((await post('/api/setup/choice', annual)).status).toBe(200);
-    expect((await post('/api/setup/choice', { ...annual, cloudSyncOffer: 'cloud_sync_monthly' })).status).toBe(409);
-    expect((await post('/api/setup/choice', { branch: 'go', memoryBilling: 'existing' })).status).toBe(409);
-    expect((await post('/api/setup/choice', { branch: 'go', memoryBilling: 'hosted' })).status).toBe(409);
-    expect((await post('/api/setup/checkout', {})).status).toBe(200);
-    expect((await post('/api/setup/complete', {})).status).toBe(409);
-    await post('/api/setup/installer', { stage: 'go-awaiting-checkout', checkout: 'paid' });
-    expect((await post('/api/setup/complete', {})).status).toBe(200);
-  });
-
-  it('retains explicit Work View sharing on a new standalone choice and locks it with the selected plan', async () => {
-    await start();
-    expect((await post('/api/setup/choice', { branch: 'home', memoryBilling: 'existing', shareWorkView: true })).status).toBe(400);
-    expect((await post('/api/setup/choice', { branch: 'go', memoryBilling: 'hosted', shareWorkView: true })).status).toBe(400);
-    const plan = { branch: 'go', memoryBilling: 'existing', cloudSyncOffer: 'cloud_sync_monthly', openCheckout: true };
-    const selected = await post('/api/setup/choice', { ...plan, shareWorkView: true });
-    expect(selected.status).toBe(200);
-    expect((await selected.json()).choice.shareWorkView).toBe(true);
-    expect((await post('/api/setup/choice', plan)).status).toBe(409);
-  });
-
-  it('saves a direct checkout once, before the terminal is ready, and keeps its selected interval', async () => {
-    await start();
-    const annual = { branch: 'go', memoryBilling: 'existing', cloudSyncOffer: 'cloud_sync_annual', openCheckout: true };
-    await post('/api/setup/installer', { stage: 'waiting-for-choice' });
-    const first = await (await post('/api/setup/choice', annual)).json();
-    expect(first.checkout).toMatchObject({ state: 'requested', requests: 1 });
-    expect(first.choice.cloudSyncOffer).toBe('cloud_sync_annual');
-    expect((await (await post('/api/setup/choice', annual)).json()).checkout).toEqual(first.checkout);
-    expect((await post('/api/setup/choice', { ...annual, cloudSyncOffer: 'cloud_sync_monthly' })).status).toBe(409);
-    expect((await post('/api/setup/choice', { branch: 'home', memoryBilling: 'existing' })).status).toBe(409);
-    await post('/api/setup/installer', { stage: 'go-awaiting-checkout' });
-    expect((await state()).checkout).toEqual(first.checkout);
-    await post('/api/setup/installer', { stage: 'go-awaiting-checkout', checkout: 'paid' });
-    expect((await (await post('/api/setup/choice', annual)).json()).checkout.state).toBe('paid');
-    expect((await state()).checkout.requests).toBe(1);
-  });
-
-  it('preserves the original token summary with the Cloud choice across worker restarts', async () => {
-    const scan = new SetupScan({ getStore: () => { throw new Error('A saved choice must not start a scan'); } });
-    const idle = scan.state();
-    const scanState = spyOn(scan, 'state').mockReturnValue({
-      ...idle, done: true, phase: 'done',
-      recentPrompts: [{ agent: 'codex', at: '2026-11-23T18:00:00Z', text: 'Original private prompt' }],
-      usage: { agents: [], windowDays: 30, windowStart: '2026-10-24', totalTokens: 12345, observations: 0, coverage: 'partial', persona: null, efficiencyPercent: null },
-    });
-    await start(null, undefined, scan);
-    const summary = { coverage: 'partial', periodLabel: 'Usage history is incomplete.', tokens: 12345, persona: null, efficiencyPercent: null };
-    const plan = { branch: 'go', memoryBilling: 'existing', cloudSyncOffer: 'cloud_sync_monthly', openCheckout: true };
-    expect((await (await post('/api/setup/choice', plan)).json()).choice.usage).toEqual(summary);
-    expect(readFileSync(statePath, 'utf8')).not.toContain('Original private prompt');
-    scanState.mockReturnValue(idle);
-    await stop();
-    await start();
-    expect((await state()).choice.usage).toEqual(summary);
-    expect((await (await post('/api/setup/choice', plan)).json()).choice.usage).toEqual(summary);
-    await post('/api/setup/installer', { stage: 'waiting-for-choice' });
-    expect((await (await post('/api/setup/choice', plan)).json()).choice.usage).toBeUndefined();
-  });
-
-  it('keeps a saved hosted choice as the legacy bundle, without silently adding a Cloud offer', async () => {
-    await start();
-    await post('/api/setup/choice', { branch: 'go', memoryBilling: 'hosted' });
-    expect((await state()).choice.cloudSyncOffer).toBeUndefined();
-    await post('/api/setup/installer', { stage: 'go-awaiting-checkout' });
-    expect((await post('/api/setup/choice', { branch: 'go', memoryBilling: 'hosted' })).status).toBe(200);
-    expect((await post('/api/setup/choice', { branch: 'go', memoryBilling: 'existing' })).status).toBe(409);
+    const chosen = await post('/api/setup/choice', { branch: 'home', memoryBilling: 'existing' });
+    expect(chosen.status).toBe(200);
+    expect(JSON.parse(readFileSync(statePath, 'utf8')).choice).toMatchObject({ branch: 'home', memoryBilling: 'existing' });
+    await post('/api/setup/installer', { stage: 'home-ready' });
+    expect((await post('/api/setup/choice', { branch: 'home', memoryBilling: 'hosted' })).status).toBe(409);
+    // The same choice re-sent (a second tab, a retry) is served from the applied one, not refused.
+    expect((await post('/api/setup/choice', { branch: 'home', memoryBilling: 'existing' })).status).toBe(200);
   });
 
   it('record the choice, lock it once the installer applied it, and finish setup once', async () => {
@@ -503,29 +438,30 @@ describe('setup state endpoints', () => {
     expect((await post('/api/setup/complete', {})).status).toBe(409);
 
     expect((await post('/api/setup/installer', { stage: 'waiting-for-choice' })).status).toBe(200);
-    const chosen = await post('/api/setup/choice', { branch: 'go', memoryBilling: 'hosted' });
+    const chosen = await post('/api/setup/choice', { branch: 'home', memoryBilling: 'existing' });
     expect(chosen.status).toBe(200);
-    expect((await chosen.json()).choice).toMatchObject({ branch: 'go', memoryBilling: 'hosted' });
+    expect((await chosen.json()).choice).toMatchObject({ branch: 'home', memoryBilling: 'existing' });
     // Before the installer acts, the person can still change their mind.
+    expect((await post('/api/setup/choice', { branch: 'home', memoryBilling: 'hosted' })).status).toBe(200);
     expect((await post('/api/setup/choice', { branch: 'home', memoryBilling: 'existing' })).status).toBe(200);
 
     expect((await post('/api/setup/installer', { stage: 'home-ready' })).status).toBe(200);
-    expect((await post('/api/setup/choice', { branch: 'go', memoryBilling: 'hosted' })).status).toBe(409);
+    expect((await post('/api/setup/choice', { branch: 'home', memoryBilling: 'hosted' })).status).toBe(409);
     expect((await post('/api/setup/choice', { branch: 'home', memoryBilling: 'existing' })).status).toBe(200);
 
     const completed = await post('/api/setup/complete', {});
     expect(completed.status).toBe(200);
     expect(await completed.json()).toMatchObject({ status: 'complete', choice: { branch: 'home' }, installer: { stage: 'home-ready' } });
     expect(JSON.parse(readFileSync(statePath, 'utf8')).status).toBe('complete');
-    expect((await post('/api/setup/choice', { branch: 'go', memoryBilling: 'hosted' })).status).toBe(409);
+    expect((await post('/api/setup/choice', { branch: 'home', memoryBilling: 'hosted' })).status).toBe(409);
   });
 
   it('clear an interrupted run\'s choice when a new installer starts waiting', async () => {
     await start();
     await post('/api/setup/installer', { stage: 'waiting-for-choice' });
-    await post('/api/setup/choice', { branch: 'go', memoryBilling: 'hosted' });
-    await post('/api/setup/installer', { stage: 'failed', error: 'cmem.ai unreachable' });
-    expect((await state()).installer).toMatchObject({ stage: 'failed', error: 'cmem.ai unreachable' });
+    await post('/api/setup/choice', { branch: 'home', memoryBilling: 'existing' });
+    await post('/api/setup/installer', { stage: 'failed', error: 'Provider unreachable' });
+    expect((await state()).installer).toMatchObject({ stage: 'failed', error: 'Provider unreachable' });
     await post('/api/setup/installer', { stage: 'waiting-for-choice' });
     expect((await state()).choice).toBeNull();
   });
@@ -548,9 +484,9 @@ describe('setup state endpoints', () => {
     expect(setupStates().at(-1).installer.stage).toBe('waiting-for-choice');
   });
 
-  it('send the current setup state on every new event stream, so a reconnect sees a checkout paid while it was away', async () => {
+  it('send the current setup state on every new event stream, without the retired checkout field', async () => {
     await start();
-    await post('/api/setup/installer', { stage: 'go-awaiting-checkout', checkout: 'paid' });
+    await post('/api/setup/installer', { stage: 'home-ready' });
     const controller = new AbortController();
     const reader = (await fetch(`${origin}/api/work-view/events`, { signal: controller.signal })).body!.getReader();
     const decoder = new TextDecoder();
@@ -558,7 +494,10 @@ describe('setup state endpoints', () => {
     while (!buffer.includes('event: setup-state\n') || !buffer.slice(buffer.indexOf('event: setup-state\n')).includes('\n\n')) buffer += decoder.decode((await reader.read()).value, { stream: true });
     controller.abort();
     const block = buffer.slice(buffer.indexOf('event: setup-state\n')).split('\n\n')[0];
-    expect(JSON.parse(block.split('\ndata: ')[1]).checkout.state).toBe('paid');
+    const payload = JSON.parse(block.split('\ndata: ')[1]);
+    expect(payload.installer.stage).toBe('home-ready');
+    // The checkout hand-off left the state with the hosted funnel: a reconnecting page must not see it again.
+    expect(JSON.stringify(payload)).not.toContain('checkout');
   });
 
   it('import history only on On The Go, and only with a history import on the worker', async () => {

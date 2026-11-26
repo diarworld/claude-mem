@@ -202,7 +202,7 @@ describe('runBrowserSetup', () => {
       log: { info: () => {}, warn: () => {} },
       fetch: worker.fetch,
       sleep: async () => {
-        if (++sleeps === 2) worker.set({ choice: { branch: 'go', memoryBilling: 'hosted', chosenAt: 'now' } });
+        if (++sleeps === 2) worker.set({ choice: { branch: 'home', memoryBilling: 'hosted', chosenAt: 'now' } });
         if (worker.get().installer?.stage === 'failed') {
           expect(attempts).toBe(1);
           expect(worker.get().installer?.error).toBe('Could not start the CMEM Pro sign-in.');

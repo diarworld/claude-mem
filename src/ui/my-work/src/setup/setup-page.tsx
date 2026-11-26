@@ -5,23 +5,21 @@ import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { CmemMark } from '@/components/brand'
 import { LOCALES, LOCALE_NAMES, useI18n, type Locale } from '@/lib/i18n'
 import { EMPTY_SETUP_DATA, connectionFailureAbove, localSetupSource, setupToolsForInstall, toSetupFailure, uploadTooLarge, type SetupChoice, type SetupData, type SetupFailure, type SetupSource } from './setup-data'
-import { backWaitsFor, choiceLocked, guardStep, hydrateSetupChoice, initialFlowState, nextAfterChoice, previousStep, scanMovesOn, type SetupFlowState, type SetupStep } from './setup-flow'
+import { backWaitsFor, choiceLocked, guardStep, hydrateSetupChoice, initialFlowState, previousStep, scanMovesOn, type SetupFlowState, type SetupStep } from './setup-flow'
 import type { SampleFailure, SampleScanStop } from './setup-sample'
-import { CheckoutScreen } from './screens/checkout-screen'
 import { ChoiceScreen } from './screens/choice-screen'
 import { FinishSetupScreen } from './screens/finish-setup-screen'
 import { ImportScreen } from './screens/import-screen'
 import { InstallScreen } from './screens/install-screen'
 import { LaunchScreen } from './screens/launch-screen'
 import { RevealScreen } from './screens/reveal-screen'
-import { SavingsScreen } from './screens/savings-screen'
 import { ScanScreen } from './screens/scan-screen'
 import { SetupButton, SetupError, type SetupBack } from './screens/shared'
 import { SetupStepBar } from './screens/step-bar'
 import { prefersReducedMotion } from './format'
 import { WorkspaceScreen } from './screens/workspace-screen'
 import { connectSetupTelemetry, createSetupTracker, sendSetupEvent } from './setup-telemetry'
-import { DEFAULT_CLOUD_SYNC_OFFER, historyImportRunning, setupCloudSyncOffer, type SetupError as SetupErrorCode } from '../../../../shared/setup-funnel.ts'
+import { historyImportRunning, type SetupError as SetupErrorCode } from '../../../../shared/setup-funnel.ts'
 import './setup.css'
 
 const PARAMS = new URLSearchParams(window.location.search)
@@ -36,7 +34,7 @@ function useSetupSource(): SetupSource | null {
     // `&fail=`, `&installer=on` and `&import=running`: setup-sample.ts's header says what each plays.
     const scan = PARAMS.get('scan')
     const scanStop = (['consent', 'failed'] as const).find((stop): stop is SampleScanStop => stop === scan)
-    const fail = (['install', 'checkout', 'import', 'installer', 'choice', 'stop'] as const).find((kind): kind is SampleFailure => kind === PARAMS.get('fail'))
+    const fail = (['install', 'import', 'installer', 'choice', 'stop'] as const).find((kind): kind is SampleFailure => kind === PARAMS.get('fail'))
     const installer = PARAMS.get('installer') === 'on'
     const importRunning = PARAMS.get('import') === 'running'
     import('./setup-sample').then(({ createSampleSetupSource }) => { if (current) setSource(createSampleSetupSource(PARAMS.get('sample') === 'new', scan !== null && !scanStop ? Number(scan) : null, (['partial', 'none'] as const).find((kind) => kind === PARAMS.get('usage')), PARAMS.get('agent') === 'none', { scanStop, fail, installer, importRunning })) })
@@ -142,34 +140,27 @@ export default function SetupPage({ onComplete }: { onComplete: () => void }) {
   // its Try again, rather than an install screen with nothing to load.
   const installationComplete = installConfirmed || (data.install === undefined && data.connectionError !== null)
   const historyAvailable = !!data.history && data.history.observations > 0
-  // A paid receipt keeps the new customer's usage screen. A resumed installer can also
-  // confirm existing credentials before it clears an interrupted checkout request.
-  const alreadyPro = data.installer?.stage === 'go-kept-existing-pro'
-    ? data.checkout?.state !== 'paid'
-    : data.installer?.stage !== 'go-awaiting-checkout' && !data.checkout && data.alreadyPro
+  // This machine already has a working configuration the funnel keeps. (The fuller
+  // skip-choice flow — no choice screen at all — is Task 7.)
+  const alreadyPro = data.alreadyPro
   if (flow.scanComplete !== scanComplete || flow.alreadyPro !== alreadyPro) {
-    setFlow((current) => ({ ...current, scanComplete, alreadyPro, branch: alreadyPro && !data.choice && !choiceEdited.current ? 'go' : current.branch }))
+    setFlow((current) => ({ ...current, scanComplete, alreadyPro }))
   }
   const hydratedFlow = hydrateSetupChoice(flow, data.choice, choiceEdited.current, data.installer?.stage)
   if (hydratedFlow !== flow) setFlow(hydratedFlow)
-  const choiceApplied = choiceLocked(data.installer?.stage, !!data.checkout)
+  const choiceApplied = choiceLocked(data.installer?.stage)
   if (data.choice && !branchConfirmed && (!choiceEdited.current || choiceApplied)) setBranchConfirmed(true)
   const availableTools = useMemo(() => setupToolsForInstall(data.install), [data.install])
-  const initialTools = (branch: SetupChoice['branch']) => availableTools
-    .filter(tool => (branch === 'go' || tool.kind === 'local') && (tool.installed || data.detectedTools.includes(tool.id)))
+  // Local tools only: cloud readers are a later, optional step in this build.
+  const initialTools = () => availableTools
+    .filter(tool => tool.kind === 'local' && (tool.installed || data.detectedTools.includes(tool.id)))
     .map(tool => tool.id)
-  // Reload restores the worker's original choice and receipt without submitting another checkout.
+  // Reload restores the worker's saved choice without resubmitting it.
   if (data.choice && installationComplete && !flow.choiceContinued && !choiceEdited.current
     && (choiceApplied || requested === 'choice')) {
-    const restored = { ...hydratedFlow, ...data.choice, alreadyPro, checkoutReviewed: data.checkout?.state === 'paid' }
-    update({ revealContinued: true, choiceContinued: true, checkoutReviewed: restored.checkoutReviewed, finishTools: initialTools(restored.branch) }, nextAfterChoice(restored))
+    update({ revealContinued: true, choiceContinued: true, finishTools: initialTools() }, 'finish-setup')
   } else if (scanMovesOn(requested, { ...flow, installationComplete, scanComplete })) setRequested('reveal')
   if (flow.importStatus === 'none' && historyAvailable) setFlow((current) => ({ ...current, importStatus: 'available' }))
-  // Only the terminal's confirmed pairing unlocks the optional hosted offer.
-  if (data.checkout?.state === 'paid' && !flow.checkoutReviewed) {
-    setFlow((current) => ({ ...current, checkoutReviewed: true }))
-    if (requested === 'checkout') setRequested(nextAfterChoice({ ...flow, alreadyPro, checkoutReviewed: true }))
-  }
   // The import screen shows only while the upload runs. When the worker says it ended (finished, failed, stopped by
   // the person, or forgotten by a restart), the page goes back to Finish Setup, which says how it ended; only the
   // person's Import starts it again (re-sending is safe).
@@ -181,7 +172,6 @@ export default function SetupPage({ onComplete }: { onComplete: () => void }) {
   const flowNow: SetupFlowState = { ...flow, installationComplete, installConfirmed }
   const step = guardStep(requested, flowNow)
   useEffect(() => { if (data.scan.phase === 'failed') telemetry.error('scan_failed') }, [data.scan.phase, telemetry])
-  useEffect(() => { if (data.checkout?.state === 'failed') telemetry.error('checkout_failed') }, [data.checkout?.state, telemetry])
   useEffect(() => { if (data.installer?.stage === 'failed') telemetry.error('installer_failed') }, [data.installer?.stage, telemetry])
   useEffect(() => { if (data.historyImport?.error) telemetry.error('import_failed') }, [data.historyImport?.error, telemetry])
   useEffect(() => {
@@ -191,7 +181,7 @@ export default function SetupPage({ onComplete }: { onComplete: () => void }) {
   // ticked as it opens, which is when the consent step first shows its over-the-cap warning (scan-screen.tsx).
   const consentOverCap = data.scan.phase === 'awaiting-consent' && uploadTooLarge(data.scan.agents)
   useEffect(() => { if (consentOverCap) telemetry.error('upload_too_large') }, [consentOverCap, telemetry])
-  const tools = useMemo(() => availableTools.filter((tool) => flow.branch === 'go' || tool.kind === 'local'), [availableTools, flow.branch])
+  const tools = useMemo(() => availableTools.filter((tool) => tool.kind === 'local'), [availableTools])
   const pickedTools = useMemo(() => tools.filter((tool) => flow.finishTools.includes(tool.id)), [tools, flow.finishTools])
 
   // Back on every screen but the first: the screen before this one on the person's path, through guardStep like any
@@ -235,27 +225,19 @@ export default function SetupPage({ onComplete }: { onComplete: () => void }) {
     if (step !== 'workspace') main.current?.querySelector<HTMLElement>('h1')?.focus({ preventScroll: true })
   }, [step])
 
-  const submitChoice = async (branch: SetupChoice['branch'], cloudSyncOffer: SetupFlowState['cloudSyncOffer']): Promise<void> => {
+  const submitChoice = async (branch: SetupChoice['branch']): Promise<void> => {
     if (!source || choicePending.current) return
     choicePending.current = true
     choiceEdited.current = true
     setSavingChoice(true)
-    const selected = { ...flow, branch, cloudSyncOffer, memoryBilling: 'existing' as const, choiceContinued: true, checkoutReviewed: false, savingsComplete: false }
-    const offer = setupCloudSyncOffer(selected)
-    const next = nextAfterChoice(selected)
-    const open = next === 'checkout'
-    telemetry.action('choose_memory', { branch, branch_confirmed: false }, offer)
+    telemetry.action('choose_memory', { branch, branch_confirmed: false })
     try {
-      const success = await handOff(() => source.choose({ branch, memoryBilling: 'existing', ...(offer ? { cloudSyncOffer: offer } : {}), ...(open ? { shareWorkView: true } : {}) }, open), 'choice_failed', 'Couldn’t save your storage choice.', () => submitChoice(branch, cloudSyncOffer))
+      const success = await handOff(() => source.choose({ branch, memoryBilling: 'existing' }), 'choice_failed', 'Couldn’t save your storage choice.', () => submitChoice(branch))
       if (!success) return
       const committed = { branch, branch_confirmed: true }
       setBranchConfirmed(true)
-      telemetry.action('choice_committed', committed, offer)
-      if (open) {
-        setCheckoutAsked(true)
-        telemetry.action('open_checkout', committed, offer)
-      }
-      update({ branch, cloudSyncOffer, memoryBilling: 'existing', revealContinued: true, choiceContinued: true, checkoutReviewed: false, savingsComplete: false, finishTools: initialTools(branch), setupComplete: false }, next)
+      telemetry.action('choice_committed', committed)
+      update({ branch, memoryBilling: 'existing', revealContinued: true, choiceContinued: true, finishTools: initialTools(), setupComplete: false }, 'finish-setup')
     } finally {
       choicePending.current = false
       setSavingChoice(false)
@@ -268,13 +250,6 @@ export default function SetupPage({ onComplete }: { onComplete: () => void }) {
     setRequested('launch')
   }
 
-  // On The Go: the press asks the terminal to open checkout. The page says it is waiting from the moment the ask is
-  // accepted, before the installer's first report arrives.
-  const [checkoutAsked, setCheckoutAsked] = useState(false)
-  const openCheckout = async (): Promise<void> => {
-    telemetry.action('open_checkout', undefined, setupCloudSyncOffer(flow))
-    if (await handOff(() => source!.checkout(), 'checkout_failed', 'Couldn’t open checkout.', openCheckout)) setCheckoutAsked(true)
-  }
   const startImport = async (): Promise<void> => {
     // A run the worker already reports running (found after a reload) is not started again: the worker answers with
     // that run and the page shows its progress. Only a press that can start one counts as a start.
@@ -303,8 +278,7 @@ export default function SetupPage({ onComplete }: { onComplete: () => void }) {
     // No "Try again" of its own: the "Retry setup" button right above it sends the same requests.
     await handOff(async () => {
       await source.resume()
-      const offer = setupCloudSyncOffer(flow)
-      await source.choose({ branch: flow.branch, memoryBilling: flow.memoryBilling, ...(offer ? { cloudSyncOffer: offer } : {}), ...(data.choice?.shareWorkView ? { shareWorkView: true } : {}) }, !!offer && !flow.alreadyPro)
+      await source.choose({ branch: flow.branch, memoryBilling: flow.memoryBilling })
     }, 'choice_failed', 'Couldn’t restart setup.')
     setRetryingSetup(false)
   }
@@ -332,24 +306,20 @@ export default function SetupPage({ onComplete }: { onComplete: () => void }) {
       onContinue={() => update({ scanReview: false }, 'reveal')} />,
     reveal: () => <RevealScreen agents={data.scan.agents} reveal={data.reveal} extraction={data.extraction} uploadedAgents={data.scan.uploadedAgents} recentPrompts={data.recentPrompts} hostedNotice={data.scan.hostedNotice}
       scanComplete={scanComplete} installedAgentCount={data.install?.status === 'ready' ? data.install.selection?.agents.length : undefined}
-      skipped={flow.scanSkipped && !scanComplete} back={savingChoice ? null : back} busy={savingChoice}
-      onStartTrial={!flow.alreadyPro && !data.choice ? () => void submitChoice('go', DEFAULT_CLOUD_SYNC_OFFER) : undefined}
+      skipped={flow.scanSkipped && !scanComplete} back={savingChoice ? null : back}
       onContinue={() => update({ revealContinued: true }, 'choice')} />,
-    choice: () => <ChoiceScreen branch={flow.branch} cloudSyncOffer={flow.cloudSyncOffer} alreadyPro={flow.alreadyPro} saving={savingChoice} back={back} onChoose={(branch, offer) => void submitChoice(branch, offer)} />,
-    savings: () => <SavingsScreen usage={data.usage} back={back}
-      onViewPlans={() => telemetry.action('view_hosted_plans', undefined, flow.cloudSyncOffer)}
-      onContinue={() => update({ savingsComplete: true }, 'finish-setup')} />,
-    // A paid checkout reached by Back goes on to Finish Setup without asking for checkout again.
-    checkout: () => <CheckoutScreen checkout={data.checkout} cloudSyncOffer={flow.cloudSyncOffer} legacyHosted={flow.memoryBilling === 'hosted'} asked={checkoutAsked} installerStopped={installerFailed} back={back}
-      onOpen={() => void openCheckout()} onContinue={() => setRequested(flow.memoryBilling === 'existing' ? 'savings' : 'finish-setup')} />,
+    choice: () => <ChoiceScreen branch={flow.branch} saving={savingChoice} back={back} onChoose={(branch) => void submitChoice(branch)} />,
     'finish-setup': () => (
-      <FinishSetupScreen branch={flow.branch} tools={tools} selected={flow.finishTools} onSelect={(finishTools) => update({ finishTools })}
-        history={flow.branch === 'go' && historyAvailable ? data.history : null} importStatus={flow.importStatus}
+      <FinishSetupScreen tools={tools} selected={flow.finishTools} onSelect={(finishTools) => update({ finishTools })}
+        history={null} importStatus={flow.importStatus}
         importResult={data.historyImport} back={back}
         stoppingImport={stoppingImport} onStopImport={() => void stopImport()}
         onImport={() => void startImport()}
         onContinue={() => void finishSetup()} />
     ),
+    // Legacy wire steps with no screens left: guardStep lands any request for them on Finish Setup.
+    savings: () => screens['finish-setup'](),
+    checkout: () => screens['finish-setup'](),
     import: () => <ImportScreen progress={data.historyImport} back={back} stopping={stoppingImport} onStop={() => void stopImport()} />,
     launch: () => <LaunchScreen tools={pickedTools} back={back} onDone={() => setRequested('workspace')} />,
     workspace: () => <WorkspaceScreen suggestions={data.suggestions} back={back} search={(query) => source!.search(query)} keepNote={(record, text) => source!.keepNote(record, text)} forgetNote={(id) => source!.forgetNote(id)} onContinue={() => void finishAll()} />,

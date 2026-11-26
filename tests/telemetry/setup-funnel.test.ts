@@ -20,7 +20,7 @@ function fixture() {
   let consent = true;
   const collector = createSetupTelemetry(statePath, { consent: () => consent, capture: event => { sent.push(event); } });
   const event: SetupEvent = { event: 'setup_step_viewed', event_id: randomUUID(), ...context, setup_funnel_version: 1,
-    visit_id: randomUUID(), step: 'scan', branch: 'go', branch_confirmed: false, occurred_at: Date.now() };
+    visit_id: randomUUID(), step: 'scan', branch: 'home', branch_confirmed: false, occurred_at: Date.now() };
   return { statePath, context, sent, collector, event, optOut: () => { consent = false; } };
 }
 
@@ -63,6 +63,12 @@ describe('setup episode collection', () => {
       expect(parseSetupEvent({ ...event, ...changes })).toBeNull();
       expect(collector.receive({ ...event, ...changes })).toBe(false);
     }
+    // The standalone Cloud Sync offer left the closed schema with the hosted funnel (local-only installer, Task 5):
+    // an event that still carries its key fails the unknown-key check, even with a once-valid value.
+    for (const changes of [{ cloud_sync_offer: 'cloud_sync_monthly' }, { event: 'setup_step_action', action: 'choose_memory', cloud_sync_offer: 'cloud_sync_annual' }]) {
+      expect(parseSetupEvent({ ...event, ...changes })).toBeNull();
+      expect(collector.receive({ ...event, ...changes })).toBe(false);
+    }
     expect(sent).toHaveLength(0);
   });
   it('deduplicates delivery and permits only one exit for each originating visit', () => {
@@ -92,7 +98,7 @@ describe('setup episode collection', () => {
     const blocked = new Promise<void>(resolve => { unblock = resolve; });
     const tracker = createSetupTracker(async event => { await blocked; collector.receive(event); });
     tracker.start(context);
-    tracker.view('scan', { branch: 'go', branch_confirmed: false });
+    tracker.view('scan', { branch: 'home', branch_confirmed: false });
     tracker.view('workspace', { branch: 'home', branch_confirmed: true });
     await Promise.resolve();
     expect(sent).toHaveLength(0);

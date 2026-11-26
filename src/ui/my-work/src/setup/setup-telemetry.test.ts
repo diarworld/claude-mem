@@ -13,16 +13,15 @@ function fixture() {
   })
   return { tracker, sent }
 }
-const unknown = { branch: 'go' as const, branch_confirmed: false }
+const early = { branch: 'home' as const, branch_confirmed: false }
 const home = { branch: 'home' as const, branch_confirmed: true }
-const go = { branch: 'go' as const, branch_confirmed: true }
 
 describe('actual setup screen telemetry', () => {
   it('retains early visits until the consented episode arrives, without inventing pageviews', async () => {
     const { tracker, sent } = fixture()
-    tracker.view('scan', unknown)
-    tracker.view('scan', unknown)
-    tracker.view('reveal', unknown)
+    tracker.view('scan', early)
+    tracker.view('scan', early)
+    tracker.view('reveal', early)
     assert.equal(sent.length, 0)
     tracker.start({ setup_flow_id: flow, already_pro: true })
     await tracker.flush()
@@ -35,41 +34,37 @@ describe('actual setup screen telemetry', () => {
   })
   it('does not emit for opt-out or a sample with no episode', async () => {
     const { tracker, sent } = fixture()
-    tracker.view('scan', unknown)
+    tracker.view('scan', early)
     tracker.start(null)
-    tracker.view('reveal', unknown)
+    tracker.view('reveal', early)
     tracker.action('upload_skipped')
     await tracker.flush()
     assert.deepEqual(sent, [])
     assert.deepEqual(tracker.completionEvents(), [])
   })
-  it('measures Home, existing Pro and reduced-motion skips as the actual next screen', async () => {
-    for (const [branch, steps] of [
-      [home, ['scan', 'reveal', 'choice', 'finish-setup', 'workspace']],
-      [go, ['scan', 'reveal', 'choice', 'finish-setup', 'launch', 'workspace']],
-    ] as const) {
-      const { tracker, sent } = fixture()
-      tracker.start({ setup_flow_id: flow, already_pro: branch === go })
-      for (const step of steps) tracker.view(step, branch)
-      await tracker.flush()
-      assert(!sent.some(event => event.step === 'checkout'))
-      assert.deepEqual(sent.filter(event => event.event === 'setup_step_viewed').map(event => event.step), steps)
-      assert(sent.filter(event => event.event === 'setup_step_transitioned').every(event => event.direction === 'forward'))
-    }
+  it('measures the home path as the actual next screen, without the retired hosted screens', async () => {
+    const { tracker, sent } = fixture()
+    tracker.start({ setup_flow_id: flow, already_pro: false })
+    for (const step of ['scan', 'reveal', 'choice', 'finish-setup', 'workspace'] as const) tracker.view(step, home)
+    await tracker.flush()
+    assert(!sent.some(event => event.step === 'checkout' || event.step === 'savings'))
+    assert.deepEqual(sent.filter(event => event.event === 'setup_step_viewed').map(event => event.step), ['scan', 'reveal', 'choice', 'finish-setup', 'workspace'])
+    assert(sent.filter(event => event.event === 'setup_step_transitioned').every(event => event.direction === 'forward'))
   })
   it('preserves a new visit on each return, and differentiates successful from failed imports', async () => {
     const { tracker, sent } = fixture()
     tracker.start({ setup_flow_id: flow, already_pro: false })
-    tracker.view('checkout', go)
-    tracker.view('savings', go)
-    tracker.view('checkout', go)
-    tracker.view('finish-setup', go)
-    tracker.view('import', go)
+    tracker.view('scan', early)
+    tracker.view('reveal', early)
+    tracker.view('scan', early)
+    tracker.view('choice', home)
+    tracker.view('finish-setup', home)
+    tracker.view('import', home)
     tracker.error('import_failed')
     tracker.error('import_failed')
-    tracker.view('finish-setup', go)
-    tracker.view('import', go)
-    tracker.view('finish-setup', { ...go, importComplete: true })
+    tracker.view('finish-setup', home)
+    tracker.view('import', home)
+    tracker.view('finish-setup', { ...home, importComplete: true })
     await tracker.flush()
     const transitions = sent.filter(event => event.event === 'setup_step_transitioned')
     assert.equal(transitions[0].direction, 'forward')
@@ -79,23 +74,10 @@ describe('actual setup screen telemetry', () => {
     assert.equal(sent.filter(event => event.event === 'setup_step_error').length, 1)
     assert.equal(new Set(transitions.map(event => event.visit_id)).size, transitions.length)
   })
-  it('records the selected interval with a choice-screen checkout and keeps its originating visit', async () => {
-    const { tracker, sent } = fixture()
-    tracker.start({ setup_flow_id: flow, already_pro: false })
-    tracker.view('choice', unknown)
-    tracker.action('open_checkout', go, 'cloud_sync_annual')
-    tracker.view('checkout', go)
-    await tracker.flush()
-    const request = sent.find(event => event.action === 'open_checkout')!
-    assert.equal(request.visit_id, sent[0].visit_id)
-    assert.equal(request.cloud_sync_offer, 'cloud_sync_annual')
-    assert.ok(parseSetupEvent(request))
-    assert.equal(parseSetupEvent({ ...request, cloud_sync_offer: 'unknown' }), null)
-  })
   it('only confirms the actual choice and prepares completion for the successful worker write', async () => {
     const { tracker, sent } = fixture()
     tracker.start({ setup_flow_id: flow, already_pro: false })
-    tracker.view('savings', unknown)
+    tracker.view('choice', early)
     tracker.error('choice_failed')
     tracker.action('choice_committed', home)
     tracker.view('finish-setup', home)
@@ -107,7 +89,7 @@ describe('actual setup screen telemetry', () => {
     assert.equal(completion[0].visit_id, completion[1].visit_id)
     assert(completion.every(event => event.step === 'workspace' && parseSetupEvent(event)))
     tracker.complete()
-    tracker.view('scan', unknown)
+    tracker.view('scan', early)
     assert.deepEqual(tracker.completionEvents(), [])
     await tracker.flush()
     assert.equal(sent.find(event => event.action === 'choice_committed')?.branch, 'home')
@@ -117,10 +99,10 @@ describe('actual setup screen telemetry', () => {
   it('a hidden tab neither exits a visit nor creates another one', async () => {
     const { tracker, sent } = fixture()
     tracker.start({ setup_flow_id: flow, already_pro: false })
-    tracker.view('scan', unknown)
+    tracker.view('scan', early)
     tracker.visibility(false); tracker.visibility(false)
-    tracker.visibility(true); tracker.view('scan', unknown)
-    tracker.view('reveal', unknown)
+    tracker.visibility(true); tracker.view('scan', early)
+    tracker.view('reveal', early)
     await tracker.flush()
     assert.equal(sent.filter(event => event.event === 'setup_page_hidden').length, 1)
     assert.equal(sent.filter(event => event.event === 'setup_step_viewed').length, 2)
@@ -128,9 +110,9 @@ describe('actual setup screen telemetry', () => {
   it('attributes a late async failure to the visit that started its request', async () => {
     const { tracker, sent } = fixture()
     tracker.start({ setup_flow_id: flow, already_pro: false })
-    tracker.view('scan', unknown)
+    tracker.view('scan', early)
     const failed = tracker.failure('upload_consent_failed')
-    tracker.view('reveal', unknown)
+    tracker.view('reveal', early)
     failed()
     await tracker.flush()
     assert.equal(sent.at(-1)?.step, 'scan')
@@ -139,7 +121,7 @@ describe('actual setup screen telemetry', () => {
   it('keeps failed deliveries in the completion batch until they are acknowledged', async () => {
     const tracker = createSetupTracker(async () => { throw new Error('offline') })
     tracker.start({ setup_flow_id: flow, already_pro: false })
-    tracker.view('scan', unknown)
+    tracker.view('scan', early)
     tracker.view('workspace', home)
     await tracker.flush()
     const batch = tracker.completionEvents()

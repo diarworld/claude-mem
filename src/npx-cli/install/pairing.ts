@@ -13,13 +13,10 @@ import * as p from '@clack/prompts';
 import { styleText } from 'node:util';
 import { hostname } from 'os';
 import { captureCliEvent } from '../../services/telemetry/cli-telemetry.js';
-import { loadTelemetryConfig, resolveTelemetryConsent } from '../../services/telemetry/consent.js';
-import { CANONICAL_CLOUD_SYNC_HUB_URL } from '../../shared/SettingsDefaultsManager.js';
 import { cmemProOrigin } from '../../shared/cmem-gateway.js';
 import { USER_SETTINGS_PATH } from '../../shared/paths.js';
 import { intentCredentialHeaders, readIntentCredentials } from '../../shared/intent-credentials.js';
 import { relayedLine } from '../../shared/relayed-text.js';
-import { CLOUD_SYNC_SETUP_CONTRACT, isSetupId, type SetupCloudSyncOffer } from '../../shared/setup-funnel.js';
 import { parseTeamBrainTeamRef, type TeamBrainTeamRef } from '../../shared/teambrain.js';
 import type { DeliveredCmemMemoryCredentials } from '../cmem-memory-credentials.js';
 import { isInteractive, log } from './cli-io.js';
@@ -70,10 +67,6 @@ export interface InstallerOAuthPairing {
   userCode: string;
   authorizationUrl: string;
   checkoutUrl: string;
-  /** Present only after the server confirms the separate Cloud Sync contract and chosen offer. */
-  cloudSyncOffer?: SetupCloudSyncOffer;
-  /** Local opt-in, retained with the selected plan across pairing retries. */
-  shareWorkView?: true;
   pollIntervalMs: number;
   /**
    * Absolute epoch ms after which polling stops, derived from the server's
@@ -133,27 +126,19 @@ function hasPairingAndTrialParams(url: URL, pairingId: string): boolean {
 }
 
 /**
- * cmem.ai copies the setup episode the installer sent (`setup_flow_id`) into
- * both claim URLs so checkout can be tied to the setup that started it. The
- * strict shape checks below predate that, so every start that sent an episode
- * was rejected as `bad_body` (#5493). Accept the parameter only when it equals
- * the episode this installer sent, then check the rest of the URL as before.
- * Returns null when the URL carries an episode we did not send.
+ * cmem.ai used to copy the setup episode the installer sent (`setup_flow_id`) into both claim URLs. This build sends
+ * no episode, so a claim URL that still carries one is not ours: reject it rather than check a shape we cannot match.
+ * Returns null when the URL names any episode.
  */
-function withoutEchoedSetupFlowId(url: URL, sentSetupFlowId: string | undefined): URL | null {
-  const echoed = url.searchParams.getAll('setup_flow_id');
-  if (echoed.length === 0) return url;
-  if (echoed.length !== 1 || !sentSetupFlowId || echoed[0] !== sentSetupFlowId) return null;
-  const stripped = new URL(url.toString());
-  stripped.searchParams.delete('setup_flow_id');
-  return stripped;
+function withoutEchoedSetupFlowId(url: URL): URL | null {
+  if (url.searchParams.getAll('setup_flow_id').length === 0) return url;
+  return null;
 }
 
 /**
- * Pure parser used by the mock-server contract tests. `sentSetupFlowId` is
- * the `setup_flow_id` this installer put in the start request, if any.
+ * Pure parser used by the mock-server contract tests.
  */
-export function parseInstallerOAuthStartBody(body: unknown, sentSetupFlowId?: string, cloudSyncOffer?: SetupCloudSyncOffer): InstallerOAuthPairing | null {
+export function parseInstallerOAuthStartBody(body: unknown): InstallerOAuthPairing | null {
   if (!body || typeof body !== 'object') return null;
   const b = body as {
     pairing_id?: unknown;
@@ -192,19 +177,12 @@ export function parseInstallerOAuthStartBody(body: unknown, sentSetupFlowId?: st
   ) return null;
 
   const parsedLoginClaim = parseBrowserUrl(`${expectedOrigin}${loginNext}`, '/api/pro/trial/claim');
-  const loginClaim = parsedLoginClaim ? withoutEchoedSetupFlowId(parsedLoginClaim, sentSetupFlowId) : null;
-  const checkoutClaim = withoutEchoedSetupFlowId(checkoutUrl, sentSetupFlowId);
-  // The browser may echo the product on the login continuation too. If present, both values must match.
-  if (cloudSyncOffer && loginClaim?.searchParams.has('product')) {
-    if (loginClaim.searchParams.getAll('product').length !== 1 || loginClaim.searchParams.get('product') !== 'cloud_sync'
-      || loginClaim.searchParams.getAll('offer').length !== 1 || loginClaim.searchParams.get('offer') !== cloudSyncOffer) return null;
-    loginClaim.searchParams.delete('product');
-    loginClaim.searchParams.delete('offer');
-  }
-  const correctCheckout = checkoutClaim && (cloudSyncOffer
-    ? b.cloud_sync_contract === CLOUD_SYNC_SETUP_CONTRACT && b.cloud_sync_offer === cloudSyncOffer
-      && hasExactSearchParams(checkoutClaim, { pairing: pairingId, product: 'cloud_sync', offer: cloudSyncOffer })
-    : b.cloud_sync_contract === undefined && b.cloud_sync_offer === undefined && hasPairingAndTrialParams(checkoutClaim, pairingId));
+  const loginClaim = parsedLoginClaim ? withoutEchoedSetupFlowId(parsedLoginClaim) : null;
+  const checkoutClaim = withoutEchoedSetupFlowId(checkoutUrl);
+  // The standalone Cloud Sync contract is gone from this client: a server answering with its offer fields, or a
+  // checkout claim naming a product/offer, is not the plain Pro checkout this parser accepts.
+  const correctCheckout = checkoutClaim && b.cloud_sync_contract === undefined && b.cloud_sync_offer === undefined
+    && hasPairingAndTrialParams(checkoutClaim, pairingId);
   if (
     !loginClaim
     || !checkoutClaim
@@ -228,7 +206,6 @@ export function parseInstallerOAuthStartBody(body: unknown, sentSetupFlowId?: st
     userCode,
     authorizationUrl: authorizationUrl.toString(),
     checkoutUrl: checkoutUrl.toString(),
-    ...(cloudSyncOffer ? { cloudSyncOffer } : {}),
     pollIntervalMs: pollIntervalS * 1000,
     ...(expiresAt !== undefined ? { expiresAt } : {}),
   };
@@ -257,13 +234,11 @@ export function lastOAuthStartErrorMessage(): string | null {
 export function buildInstallerOAuthStartBody(
   source: string,
   deviceName: string,
-  ctx: { setupFlowId?: string } = {},
   teamInvite?: string,
 ): Record<string, unknown> {
   return {
     source,
     device_name: deviceName,
-    ...(isSetupId(ctx.setupFlowId) ? { setup_flow_id: ctx.setupFlowId } : {}),
     ...(teamInvite ? { team_invite: teamInvite } : {}),
   };
 }
@@ -273,7 +248,7 @@ export function buildInstallerOAuthStartBody(
  * the CLI: the terminal asks for nothing, and the browser signs in directly.
  */
 export async function startInstallerOAuthPairing(
-  opts: { source?: string; timeoutMs?: number; teamInvite?: string; setupFlowId?: string; cloudSyncOffer?: SetupCloudSyncOffer } = {},
+  opts: { source?: string; timeoutMs?: number; teamInvite?: string } = {},
 ): Promise<InstallerOAuthPairing | null> {
   const source = opts.source ?? 'npx-installer';
   lastStartFailure = null;
@@ -290,14 +265,7 @@ export async function startInstallerOAuthPairing(
   }
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), opts.timeoutMs ?? OAUTH_START_TIMEOUT_MS);
-  const startBody = buildInstallerOAuthStartBody(source, hostname(), {
-    ...(isSetupId(opts.setupFlowId) && resolveTelemetryConsent(process.env, loadTelemetryConfig()) ? { setupFlowId: opts.setupFlowId } : {}),
-  }, opts.teamInvite);
-  if (opts.cloudSyncOffer) {
-    startBody.cloud_sync_contract = CLOUD_SYNC_SETUP_CONTRACT;
-    startBody.cloud_sync_offer = opts.cloudSyncOffer;
-  }
-  const sentSetupFlowId = typeof startBody.setup_flow_id === 'string' ? startBody.setup_flow_id : undefined;
+  const startBody = buildInstallerOAuthStartBody(source, hostname(), opts.teamInvite);
   try {
     const response = await fetch(CMEM_INSTALLER_OAUTH_START_URL, {
       method: 'POST',
@@ -334,10 +302,9 @@ export async function startInstallerOAuthPairing(
       lastStartFailure = error instanceof Error && error.name === 'AbortError' ? 'timeout' : 'bad_body';
       return null;
     }
-    const pairing = parseInstallerOAuthStartBody(body, sentSetupFlowId, opts.cloudSyncOffer);
+    const pairing = parseInstallerOAuthStartBody(body);
     if (!pairing) {
       lastStartFailure = 'bad_body';
-      if (opts.cloudSyncOffer) lastStartErrorMessage = 'cmem.ai did not confirm the selected standalone Cloud Sync offer. No bundled checkout was opened. Update Claude-Mem and retry.';
     }
     return pairing;
   } catch (error: unknown) {
@@ -546,9 +513,7 @@ export async function waitForInstallerPairing(
   version: string,
 ): Promise<InstallerPollOutcome | null> {
   const startedAt = Date.now();
-  const rerun = phase === 'teambrain_join' ? 'Run npx claude-mem teambrain join again'
-    : phase === 'enrollment' && pairing.cloudSyncOffer ? 'Reopen Cloud Sync setup in your installer tab for a fresh code'
-      : 'Run the installer again';
+  const rerun = phase === 'teambrain_join' ? 'Run npx claude-mem teambrain join again' : 'Run the installer again';
   // The login phase must never name CMEM Pro. Logging in is required of every
   // user and happens BEFORE the provider choice, so naming a paid plan here
   // reads as an upsell attached to a mandatory step and muddies the funnel.
@@ -563,7 +528,7 @@ export async function waitForInstallerPairing(
       ? 'Waiting for the browser to finish signing you in…'
       : phase === 'teambrain_join'
         ? 'Waiting for the browser to finish joining the team…'
-        : pairing.cloudSyncOffer ? 'Waiting for Cloud Sync setup in the browser…' : 'Waiting for CMEM Pro setup in the browser…',
+        : 'Waiting for CMEM Pro setup in the browser…',
     // A join's invite is redeemed at device approval, on a page that names the team.
     awaiting_approval: phase === 'teambrain_join'
       ? `Approve this device on the page (code ${pairing.userCode}) to join the team…`
@@ -649,28 +614,16 @@ export async function waitForInstallerPairing(
   }
 }
 
-/** A Cloud-only intent must never stage or activate a customer's separate hosted memory credentials. */
-export function pairingAcceptsReady(pairing: InstallerOAuthPairing, ready: TrialReadyResult): boolean {
-  if (!pairing.cloudSyncOffer || (ready.plan === 'cloud_sync' && !ready.memory)) return true;
-  log.error('The account did not return the selected Cloud Sync connection. Your existing memory provider was kept.');
-  return false;
-}
-
 /**
  * Apply the new Work View choice only after the owner has approved this device.
  * The hub's independent work_state capability still gates every reserved record.
+ *
+ * The standalone Cloud Sync offer (and with it the Work View opt-in this
+ * function once applied) is gone from this client, so a ready pairing only
+ * writes the account's own connection settings.
  */
-export function saveReadyPairing(pairing: InstallerOAuthPairing, result: TrialReadyResult): boolean {
-  const selectedWorkView = pairing.cloudSyncOffer && pairing.shareWorkView && result.plan === 'cloud_sync' && !result.memory;
-  const canonicalHub = result.hubUrl.replace(/\/+$/, '') === CANONICAL_CLOUD_SYNC_HUB_URL;
-  const configuredHub = process.env.CLAUDE_MEM_CLOUD_SYNC_HUB_URL;
-  return mergeSettings(buildTrialReadySettings(result), USER_SETTINGS_PATH, target => {
-    if (selectedWorkView && canonicalHub && (configuredHub === undefined || configuredHub.replace(/\/+$/, '') === CANONICAL_CLOUD_SYNC_HUB_URL)
-      && process.env.CLAUDE_MEM_WORK_VIEW_SHARED_STATE === undefined
-      && (target.CLAUDE_MEM_WORK_VIEW_SHARED_STATE === undefined || target.CLAUDE_MEM_WORK_VIEW_SHARED_STATE === '')) {
-      target.CLAUDE_MEM_WORK_VIEW_SHARED_STATE = 'true';
-    }
-  });
+export function saveReadyPairing(result: TrialReadyResult): boolean {
+  return mergeSettings(buildTrialReadySettings(result), USER_SETTINGS_PATH);
 }
 
 /** Required account step. OAuth completes before provider choice and never chooses a paid provider. */
@@ -681,8 +634,7 @@ export async function completeInstallerOAuthLogin(
   const result = await waitForInstallerPairing(pairing, 'login', version);
   if (!result) return false;
   if (result.kind === 'ready') {
-    if (!pairingAcceptsReady(pairing, result)) return false;
-    if (!saveReadyPairing(pairing, result)) return false;
+    if (!saveReadyPairing(result)) return false;
     pairing.delivered = result;
   }
   log.success('OAuth login complete.');

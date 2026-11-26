@@ -2,31 +2,26 @@
 // on it). One file per machine: the funnel shows until `status` is `complete`, for new installs and upgrades alike.
 import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, unlinkSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
-import { isCmemGatewayUrl } from './cmem-gateway.js';
 import { resolveDataDir } from './paths.js';
 import { randomUUID } from 'node:crypto';
 import type { SetupInstallState } from './setup-install.js';
 import type { SetupUsage } from './setup-usage.js';
 import {
-  isSetupId, type SetupBranch, type SetupCheckoutState, type SetupCloudSyncOffer, type SetupInstallerStage, type SetupMemoryBilling,
+  isSetupId, type SetupBranch, type SetupInstallerStage, type SetupMemoryBilling,
   type SetupStatus, type SetupTelemetryContext,
 } from './setup-funnel.js';
 
 // The states themselves are defined in setup-funnel.ts, which the setup page can also load.
-export type { SetupBranch, SetupCheckoutState, SetupInstallerStage, SetupMemoryBilling, SetupStatus };
+export type { SetupBranch, SetupInstallerStage, SetupMemoryBilling, SetupStatus };
 
 export interface SetupChoice {
   branch: SetupBranch;
   memoryBilling: SetupMemoryBilling;
-  cloudSyncOffer?: SetupCloudSyncOffer;
-  /** The owner chose the standalone offer that includes sharing the Work View board. */
-  shareWorkView?: true;
   chosenAt: string;
   /** Original scan summary for the post-checkout usage screen, retained across worker restarts. */
   usage?: SetupUsage;
 }
 export interface SetupInstallerReport { stage: SetupInstallerStage; error: string | null; updatedAt: string }
-export interface SetupCheckout { state: SetupCheckoutState; requests: number; error: string | null; updatedAt: string }
 
 export interface SetupStateFile {
   status: SetupStatus;
@@ -34,7 +29,6 @@ export interface SetupStateFile {
   install?: SetupInstallState | null;
   choice: SetupChoice | null;
   installer: SetupInstallerReport | null;
-  checkout: SetupCheckout | null;
   /** Finish Setup's picked tools (SETUP_TOOLS ids); the installer sets up local ones it did not install yet. */
   tools: string[] | null;
   completedAt: string | null;
@@ -53,7 +47,7 @@ export interface SetupStateView extends SetupStateFile {
   backgroundWorkRunning?: Array<'extraction' | 'history-import'>;
 }
 
-export const INITIAL_SETUP_STATE: SetupStateFile = { status: 'pending', choice: null, installer: null, checkout: null, tools: null, completedAt: null };
+export const INITIAL_SETUP_STATE: SetupStateFile = { status: 'pending', choice: null, installer: null, tools: null, completedAt: null };
 
 /** Resolved at call time so a CLAUDE_MEM_DATA_DIR set after import is honored (installer tests, clean-HOME runs). */
 export function setupStatePath(): string {
@@ -109,6 +103,9 @@ export function hasActiveSetupSession(statePath: string = setupStatePath()): boo
 /** A missing file is a machine that has not finished setup. A corrupt one is an error, not a silent reset. */
 export function readSetupState(path: string = setupStatePath()): SetupStateFile {
   if (!existsSync(path)) return { ...INITIAL_SETUP_STATE };
+  // Lenient on purpose: a file saved by an older build carries fields this one dropped (a `checkout` object, a
+  // `branch: 'go'` choice, a `cloudSyncOffer`). They pass through `choice` untouched and are ignored otherwise —
+  // the lenient Partial cast never throws, so an upgrade with pending setup does not hard-crash the setup page.
   const parsed = JSON.parse(readFileSync(path, 'utf8')) as Partial<SetupStateFile>;
   if (parsed.status !== 'pending' && parsed.status !== 'complete') {
     throw new Error(`Setup state at ${path} has no valid status.`);
@@ -118,7 +115,6 @@ export function readSetupState(path: string = setupStatePath()): SetupStateFile 
     ...(parsed.install ? { install: parsed.install } : {}),
     choice: parsed.choice ?? null,
     installer: parsed.installer ?? null,
-    checkout: parsed.checkout ?? null,
     tools: Array.isArray(parsed.tools) ? parsed.tools.filter((tool): tool is string => typeof tool === 'string') : null,
     completedAt: parsed.completedAt ?? null,
   };
@@ -145,11 +141,15 @@ function writeJsonAtomically(path: string, value: unknown): void {
 
 const filled = (value: unknown): boolean => typeof value === 'string' && value.trim().length > 0;
 
-/** CMEM Pro observer on the cmem.ai gateway, or a configured cloud sync connection. */
+/**
+ * An existing configuration the funnel must keep: any openrouter observer that holds a key against a non-empty
+ * base URL — the cmem.ai gateway or any other OpenRouter-compatible endpoint (a self-hosted GPUStack, for example) —
+ * or a configured cloud sync connection.
+ */
 export function hasProConfiguration(settings: Record<string, unknown>): boolean {
   const proObserver = settings.CLAUDE_MEM_PROVIDER === 'openrouter'
     && filled(settings.CLAUDE_MEM_OPENROUTER_API_KEY)
-    && isCmemGatewayUrl(String(settings.CLAUDE_MEM_OPENROUTER_BASE_URL ?? ''));
+    && filled(settings.CLAUDE_MEM_OPENROUTER_BASE_URL);
   const cloudSync = ['CLAUDE_MEM_CLOUD_SYNC_TOKEN', 'CLAUDE_MEM_CLOUD_SYNC_USER_ID', 'CLAUDE_MEM_CLOUD_SYNC_HUB_URL']
     .every((key) => filled(settings[key]));
   return proObserver || cloudSync;
