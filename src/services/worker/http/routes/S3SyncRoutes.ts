@@ -4,6 +4,7 @@ import { BaseRouteHandler } from '../BaseRouteHandler.js';
 import type { DatabaseManager } from '../../DatabaseManager.js';
 import { isForeignLoopbackBrowserWrite } from './SettingsRoutes.js';
 import { S3_SYNC_SETS } from '../../../../services/s3sync/manifest.js';
+import type { S3SyncPushOutcome } from '../../../../services/s3sync/S3SyncManager.js';
 
 /**
  * S3 Sync endpoints.
@@ -74,7 +75,17 @@ export class S3SyncRoutes extends BaseRouteHandler {
       res.status(400).json({ error: (error as Error).message });
       return;
     }
-    const outcome = await manager.runNow(set);
+    let outcome: S3SyncPushOutcome | null;
+    try {
+      outcome = await manager.runNow(set);
+    } catch (error) {
+      // runNow throws for a stopped manager or a set gated by
+      // CLAUDE_MEM_S3_SYNC_INCLUDE_CHROMA=false — "not possible", not a
+      // server fault, so answer 400 rather than letting wrapHandler 500 it.
+      logger.warn('S3SYNC', 'Push failed', { set }, error instanceof Error ? error : new Error(String(error)));
+      res.status(400).json({ error: (error as Error).message });
+      return;
+    }
     if (outcome === null) {
       res.status(409).json({ error: 'An S3 Sync push is already running' });
       return;
@@ -89,7 +100,7 @@ export class S3SyncRoutes extends BaseRouteHandler {
     }
     const manager = this.dbManager.getS3SyncManager();
     if (!manager) {
-      res.status(400).json({ error: 'S3 Sync is not enabled' });
+      res.status(400).json({ error: 'S3 Sync is not enabled (set CLAUDE_MEM_S3_SYNC_ENABLED to "true", add the bucket keys to .env, and restart the worker)' });
       return;
     }
     const body = (req.body ?? {}) as { set?: string; generation?: string; force?: boolean };

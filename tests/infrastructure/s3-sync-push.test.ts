@@ -195,4 +195,17 @@ describe('s3 sync push pipeline', () => {
     expect(s3.objects.has('claude-mem-sync/testbox/db/LATEST')).toBe(true);
     expect(s3.objects.has(`claude-mem-sync/testbox/db/gen/${second!.generation}/manifest.json`)).toBe(true);
   });
+
+  test('runNow(chroma) throws when chroma is gated instead of pretending to be busy', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 's3sync-push-'));
+    makeFixture(dir);
+    const s3 = new FakeS3();
+    const manager = makeManager(dir, s3, {}, { CLAUDE_MEM_S3_SYNC_INCLUDE_CHROMA: 'false' });
+    await expect(manager.runNow('chroma')).rejects.toThrow(/disabled/i);
+    // 'all' keeps the scheduled path's semantics: the gated chroma is
+    // silently skipped and the db push still runs.
+    const outcome = await manager.runNow('all');
+    expect(outcome).not.toBeNull();
+    expect(s3.objects.has('claude-mem-sync/testbox/db/LATEST')).toBe(true);
+  });
 });

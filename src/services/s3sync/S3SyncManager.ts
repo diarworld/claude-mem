@@ -132,6 +132,11 @@ export class S3SyncManager {
   private readonly nextRunAt = new Map<S3SyncSet, number | null>();
   private readonly controllers = new Map<S3SyncSet, AbortController>();
 
+  /** In-flight push promise per set, registered synchronously at pushSet
+   * entry (before the pipeline's first await) so stop() can always observe
+   * and settle an in-flight push. */
+  private readonly pushPromises = new Map<S3SyncSet, Promise<unknown>>();
+
   constructor(settings: S3SyncSettingKeys, options: S3SyncManagerOptions = {}) {
     this.settings = settings;
     this.now = options.now ?? Date.now;
@@ -220,7 +225,10 @@ export class S3SyncManager {
 
   // --- lifecycle ---------------------------------------------------------
 
-  async start(): Promise<void> {
+  // Fully synchronous (guarded sweeps + schedule arming), so a `void` return
+  // is honest: if a later edit adds an await, the floating promise becomes a
+  // visible type error instead of a silent unhandled rejection.
+  start(): void {
     if (this.started || this.stopped) return;
     this.started = true;
     this.sweepStaleStaging();
@@ -300,6 +308,11 @@ export class S3SyncManager {
     this.timers.clear();
     for (const controller of this.controllers.values()) controller.abort();
     this.controllers.clear();
+    // Graceful shutdown lets the aborted pushes run their teardown (state
+    // persist, work-dir cleanup) instead of abandoning them mid-flight.
+    // Mirrors BackupManager.stop's allSettled. Idempotent: a second call
+    // finds an empty map and resolves immediately.
+    await Promise.allSettled([...this.pushPromises.values()]);
   }
 
   // --- schedule loop (shape copied from BackupManager.schedule/tick) -----
@@ -363,6 +376,15 @@ export class S3SyncManager {
 
   // --- on-demand runs ----------------------------------------------------
 
+  /**
+   * On-demand push. Resolves `null` when the set is already running (the
+   * route answers 409); throws when the manager is stopped, or when an
+   * explicit 'chroma' request names a set disabled by
+   * CLAUDE_MEM_S3_SYNC_INCLUDE_CHROMA=false (the route answers 400 — "busy"
+   * and "gated" must not share a status). 'all' keeps the scheduled path's
+   * semantics: a gated chroma is silently skipped, because the caller asked
+   * for everything that is pushable, not for chroma specifically.
+   */
   async runNow(set: S3SyncSet | 'all'): Promise<S3SyncPushOutcome | null> {
     if (this.stopped) throw new Error('S3 sync manager stopped');
     if (set === 'all') {
@@ -370,11 +392,31 @@ export class S3SyncManager {
       const chroma = this.chromaEnabled() ? await this.pushSet('chroma') : null;
       return db ?? chroma;
     }
-    if (set === 'chroma' && !this.chromaEnabled()) return null;
+    if (set === 'chroma' && !this.chromaEnabled()) {
+      throw new Error('chroma sync is disabled by CLAUDE_MEM_S3_SYNC_INCLUDE_CHROMA=false');
+    }
     return this.pushSet(set);
   }
 
   // --- push pipeline -----------------------------------------------------
+
+  /**
+   * Push one set on demand (runNow) or on schedule (tick). Single-flight per
+   * set: a second request while one is running resolves `null` (the route
+   * answers 409). The in-flight promise is registered synchronously — before
+   * the pipeline's first await — so a concurrent stop() always sees it and
+   * can settle it.
+   */
+  private async pushSet(set: S3SyncSet): Promise<S3SyncPushOutcome | null> {
+    if (this.running.has(set)) return null;
+    const push = this.executePushSet(set);
+    this.pushPromises.set(set, push);
+    try {
+      return await push;
+    } finally {
+      if (this.pushPromises.get(set) === push) this.pushPromises.delete(set);
+    }
+  }
 
   /**
    * Push one set: snapshot → upload → manifest → LATEST → prune. The bucket
@@ -385,8 +427,7 @@ export class S3SyncManager {
    * generation. Aborts die between files; the in-flight Bun upload completes
    * (the transport has no signal support).
    */
-  private async pushSet(set: S3SyncSet): Promise<S3SyncPushOutcome | null> {
-    if (this.running.has(set)) return null;
+  private async executePushSet(set: S3SyncSet): Promise<S3SyncPushOutcome | null> {
     this.running.add(set);
     const controller = new AbortController();
     this.controllers.set(set, controller);
