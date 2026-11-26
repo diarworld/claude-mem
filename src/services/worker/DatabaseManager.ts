@@ -146,7 +146,20 @@ export class DatabaseManager {
     // `getS3SyncManager()?.start()` call is a free no-op and the routes
     // answer {configured: false}.
     if (settings.CLAUDE_MEM_S3_SYNC_ENABLED === 'true') {
-      this.s3SyncManager = new S3SyncManager(settings);
+      this.s3SyncManager = new S3SyncManager(settings, {
+        // The tick's SyncApply merges into the SAME shared connection the
+        // worker uses (S3 Sync v2 Task 6 wiring). The manager never opens a
+        // second writable connection to the live db.
+        db: this.db,
+        // The real ChromaSync forwarder (null when chroma is disabled —
+        // merged rows then skip chroma and the boot backfill reconciles).
+        // close() nulls THIS field before the s3 manager stops, but the
+        // manager holds its own captured reference and the object is never
+        // closed — an in-flight merge's forwarder keeps working through
+        // stop(), and a straggling fire-and-forget chroma job past db close
+        // lands in SyncApply's logged .catch (it cannot crash the tick).
+        chromaSync: this.chromaSync,
+      });
     }
 
     logger.info('DB', 'Database initialized (shared connection)');

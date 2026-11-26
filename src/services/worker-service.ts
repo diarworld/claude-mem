@@ -388,6 +388,7 @@ export class WorkerService implements WorkerRef {
   private readonly viewerActivity = new ViewerActivity(active => this.syncClient?.setViewerActive(active));
   private readonly viewerSync = new ViewerSyncService({
     cloud: () => this.dbManager.getCloudSync(), pull: () => this.syncClient,
+    s3: () => this.dbManager.getS3SyncManager()?.status() ?? null,
     hasViewers: () => this.viewerEventStreamClientCount() > 0,
     onChange: sync => {
       this.sseBroadcaster.broadcast({ type: 'sync_status', sync });

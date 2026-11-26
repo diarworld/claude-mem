@@ -1,7 +1,7 @@
 import type { CloudSync, CloudSyncStatus } from './CloudSync.js';
 import type { SyncClient } from './SyncClient.js';
 import { onContextInvalidation } from '../../shared/context-invalidation.js';
-import { composeViewerSyncStatus, type ViewerSyncStatus } from '../../shared/viewer-sync-status.js';
+import { composeViewerSyncStatus, type S3SyncEvidence, type ViewerSyncStatus } from '../../shared/viewer-sync-status.js';
 
 type Cloud = Pick<CloudSync, 'status' | 'statusWithHubProbe' | 'historicalExcludedCount'>;
 
@@ -21,6 +21,8 @@ export class ViewerSyncService {
   constructor(private readonly options: {
     cloud: () => Cloud | null;
     pull: () => Pick<SyncClient, 'status'> | null;
+    /** S3 Sync v2: the manager's status() evidence, or null when S3 Sync is off. */
+    s3?: () => S3SyncEvidence | null;
     hasViewers?: () => boolean;
     onChange?: (value: ViewerSyncStatus) => void;
     now?: () => number;
@@ -54,7 +56,9 @@ export class ViewerSyncService {
     }
     let download = null;
     try { download = this.options.pull()?.status() ?? null; } catch { /* A closed/unreadable local cursor is unknown, never current. */ }
-    return composeViewerSyncStatus(this.cached, download, this.excluded, this.now());
+    let s3: S3SyncEvidence | null = null;
+    try { s3 = this.options.s3?.() ?? null; } catch { /* A closed S3 manager reads as disabled, never as an error state. */ }
+    return composeViewerSyncStatus(this.cached, download, this.excluded, this.now(), s3);
   }
 
   async statusWithProbe(): Promise<CloudSyncStatus & { sync: ViewerSyncStatus } | { configured: false }> {
