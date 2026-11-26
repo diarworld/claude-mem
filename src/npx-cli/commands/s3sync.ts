@@ -71,6 +71,17 @@ function phaseLabel(phase: string): string {
 
 async function runStatus(): Promise<void> {
   const response = await api('/api/s3sync/status');
+  if (!response.ok) {
+    let problem = `HTTP ${response.status}`;
+    try {
+      const body = (await response.json()) as { error?: unknown };
+      if (body && typeof body === 'object' && typeof body.error === 'string' && body.error) problem = body.error;
+    } catch {
+      // A non-JSON error body still reports the HTTP status below.
+    }
+    console.error(styleText('red', `Status failed: ${problem}`));
+    process.exit(1);
+  }
   const data = await readJsonOrExit(response, 'S3 Sync status');
   if (data.configured === false) {
     console.log(styleText('yellow', 'S3 Sync is not enabled.'));
@@ -97,9 +108,21 @@ async function runStatus(): Promise<void> {
 function parseArgs(argv: string[]): { set: string; generation?: string; force: boolean } {
   const args = { set: 'all', force: false } as { set: string; generation?: string; force: boolean };
   for (let i = 0; i < argv.length; i++) {
-    if (argv[i] === '--set') args.set = argv[++i] ?? 'all';
-    else if (argv[i] === '--generation') args.generation = argv[++i];
-    else if (argv[i] === '--force') args.force = true;
+    if (argv[i] === '--set') {
+      if (argv[i + 1] === undefined) {
+        console.error(styleText('red', 'Missing value for --set'));
+        printUsage();
+        process.exit(1);
+      }
+      args.set = argv[++i];
+    } else if (argv[i] === '--generation') {
+      if (argv[i + 1] === undefined) {
+        console.error(styleText('red', 'Missing value for --generation'));
+        printUsage();
+        process.exit(1);
+      }
+      args.generation = argv[++i];
+    } else if (argv[i] === '--force') args.force = true;
   }
   return args;
 }
@@ -135,6 +158,21 @@ async function runPull(argv: string[]): Promise<void> {
   if (!response.ok) {
     console.error(styleText('red', `Pull failed: ${data.error ?? `HTTP ${response.status}`}`));
     process.exit(1);
+  }
+  // Skip-aware: a successful pull with every set SKIPPED (empty bucket / no
+  // remote LATEST) staged nothing, so there is nothing to apply at boot and
+  // a restart would be pure downtime. House convention: backup list's
+  // "No snapshots yet." + hint. A mixed result still restarts — the staged
+  // set applies at boot.
+  const sets = Array.isArray(data.outcome?.sets)
+    ? (data.outcome.sets as Array<{ set: string; status: string; reason?: string }>)
+    : [];
+  if (sets.length > 0 && sets.every(s => s.status === 'skipped')) {
+    console.log('Nothing to pull from S3.');
+    for (const s of sets) {
+      console.log(`  ${s.set}: ${s.reason ?? 'nothing to pull'}`);
+    }
+    return;
   }
   console.log(styleText('green', 'Restore staged from S3.'));
   console.log('  Restarting the worker to apply it; check the result with:');
