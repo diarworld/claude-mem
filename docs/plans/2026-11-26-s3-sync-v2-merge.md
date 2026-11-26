@@ -85,7 +85,7 @@ Implementer subagent → spec reviewer (does the diff match the task text?) → 
 2. Failing tests (two managers over ONE shared FakeS3, fixture db sets pushed by each — reuse the v1 push fixtures):
    - **convergence**: A pushes (2 observations), B merges → B's local db contains A's rows as replica rows (`origin_device_id = A's syncIdentity`) with NEW local ids; chroma pending marks recorded for those ids (assert via ChromaSyncState read API); B's `mergeState[A]` = ok with applied counts; watermark = A's generation.
    - **both directions**: then B pushes its own rows; A merges → A sees B's observations AND (transitively) nothing duplicate; second identical merge → `applied: 0` (idempotence).
-   - **resurrection (documented additive semantics)**: delete an observation locally on B, A re-pushes? NO — B merges again from A's unchanged snapshot → the deleted id reappears (assert + comment "additive v1, by design").
+   - **resurrection (AMENDED after Task 4, verified against SyncApply)**: delete an observation locally on B, B re-merges A's UNCHANGED snapshot → the row does NOT reappear (`sync_entity_heads` pins exactly-once; identical replay = `skippedStale`). The row reappears only via a peer REV ADVANCE (A re-pushes at sync_rev 2 → applied, original attribution preserved). Assert both halves + comment naming the ledger; "strictly safer than the plan's original caveat: watermark loss cannot resurrect deleted replicas".
    - **error isolation**: peer A's manifest hash tampered → peer A error (state), peer B still merges.
    - **refusal**: construct the manager with cloud-sync-configured settings (find the real gate; simulate it the same way) → merge throws/refuses with a clear message; test pins it.
    - **single-flight + stop**: concurrent merge() calls → one runs; `stop()` during merge is safe (no unhandled rejection; merges settle or are guarded).
@@ -146,7 +146,7 @@ Implementer subagent → spec reviewer (does the diff match the task text?) → 
 ### Task 9: Documentation
 
 **Files:**
-- Modify: `docs/public/s3-sync.mdx` (Multi-device section: how it works, additive semantics, resurrection caveat, cloud-sync exclusivity, merge interval setting, UI status)
+- Modify: `docs/public/s3-sync.mdx` (Multi-device section: how it works, additive semantics incl. the verified no-resurrection-on-identical-replay behavior (sync_entity_heads) + rev-advance re-creation, cloud-sync exclusivity + cursor-sharing note on re-enable, merge interval setting, UI status, first-merge write-lock note for large snapshots)
 - Modify: `docs/CHANGELOG.md`
 - Modify: `docs/plans/2026-11-26-s3-sync.md` (only to point v1's "no multi-device merge" at the v2 doc)
 
