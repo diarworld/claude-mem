@@ -29,6 +29,8 @@ interface CaseSpec {
   tty?: boolean;
   settings?: Record<string, unknown>;
   env?: Record<string, string>;
+  /** Credentials written to CLAUDE_MEM_ENV_FILE (~/.claude-mem/.env) before the run. */
+  envFile?: string;
   options?: Record<string, unknown>;
   passwordAnswer?: string | null;
   /** 'promptProvider' (default) or 'validate' — which exported step drives the case. */
@@ -46,6 +48,7 @@ interface CaseResult {
   providerSource?: string;
   passwordCalls?: string[];
   settings?: Record<string, unknown>;
+  envFileAfter?: string | null;
 }
 
 function runCase(spec: CaseSpec): CaseResult {
@@ -69,6 +72,10 @@ function runCase(spec: CaseSpec): CaseResult {
         fs.mkdirSync(process.env.CLAUDE_MEM_DATA_DIR, { recursive: true });
         fs.writeFileSync(path.join(process.env.CLAUDE_MEM_DATA_DIR, 'setup-state.json'), JSON.stringify(spec.setupState, null, 2));
       }
+      if (spec.envFile !== undefined) {
+        fs.mkdirSync(path.dirname(process.env.CLAUDE_MEM_ENV_FILE), { recursive: true });
+        fs.writeFileSync(process.env.CLAUDE_MEM_ENV_FILE, spec.envFile);
+      }
       const settingsManagerPath = ${JSON.stringify(join(repoRoot, 'src', 'shared', 'SettingsDefaultsManager.js'))};
       if (spec.seed === 'load') {
         // What any claude-mem settings read does on a machine with no
@@ -91,17 +98,20 @@ function runCase(spec: CaseSpec): CaseResult {
       const { promptProvider, validateNonInteractiveProvider } = await import(${JSON.stringify(join(repoRoot, 'src', 'npx-cli', 'commands', 'install.js'))});
       const { createInstallSummary } = await import(${JSON.stringify(join(repoRoot, 'src', 'npx-cli', 'install', 'error-reporter.js'))});
       const read = () => { try { return JSON.parse(fs.readFileSync(settingsPath, 'utf8')); } catch { return null; } };
+      const readEnvFile = () => { try { return fs.readFileSync(process.env.CLAUDE_MEM_ENV_FILE, 'utf8'); } catch { return null; } };
       try {
         if (spec.step === 'validate') {
           validateNonInteractiveProvider(spec.options as never, createInstallSummary());
         } else {
           const options = { ...(spec.options ?? {}) };
           const provider = await promptProvider(options as never);
-          console.log('RESULT:' + JSON.stringify({ provider, providerSource: options.providerSource, passwordCalls, settings: read() }));
+          console.log('RESULT:' + JSON.stringify({ provider, providerSource: options.providerSource, passwordCalls, settings: read(), envFileAfter: readEnvFile() }));
         }
       } catch (error) {
         const err = error as { remediation?: string; message?: string };
-        console.log('RESULT:' + JSON.stringify({ error: err.message ?? String(error), remediation: err.remediation }));
+        // Abort cases report what was asked and what stayed on disk, the same
+        // as completed ones: a cancelled prompt must have asked and written nothing.
+        console.log('RESULT:' + JSON.stringify({ error: err.message ?? String(error), remediation: err.remediation, passwordCalls, settings: read(), envFileAfter: readEnvFile() }));
       }
     `], {
       env: {
@@ -252,5 +262,83 @@ describe('GPUStack fresh-install defaults', () => {
       CLAUDE_MEM_OPENROUTER_MODEL: SHIPPED_MODEL,
       CLAUDE_MEM_OPENROUTER_API_KEY: 'gpustack-key',
     });
+  });
+
+  it('empty-string settings values are held nowhere, exactly like unset ones', () => {
+    // The gate reads heldKey = non-empty after trim; a machine whose keys were
+    // all blanked ('') by an older tool or a manual edit is a fresh machine:
+    // the defaults land on top of the empties and the missing key is asked for.
+    const result = runCase({
+      tty: true,
+      settings: {
+        CLAUDE_MEM_PROVIDER: '',
+        CLAUDE_MEM_OPENROUTER_BASE_URL: '',
+        CLAUDE_MEM_OPENROUTER_MODEL: '',
+        CLAUDE_MEM_OPENROUTER_API_KEY: '',
+      },
+      passwordAnswer: 'gpustack-key',
+    });
+    expect(result.error).toBeUndefined();
+    expect(result.provider).toBe('openrouter');
+    expect(result.providerSource).toBe('default');
+    expect(result.passwordCalls).toEqual(['Paste your GPUStack API key:']);
+    expect(result.settings).toMatchObject({
+      CLAUDE_MEM_PROVIDER: 'openrouter',
+      CLAUDE_MEM_OPENROUTER_BASE_URL: GPUSTACK_URL,
+      CLAUDE_MEM_OPENROUTER_MODEL: GPUSTACK_MODEL,
+      CLAUDE_MEM_OPENROUTER_API_KEY: 'gpustack-key',
+    });
+  });
+
+  it('an empty answer at the key prompt aborts the run and leaves the settings untouched', () => {
+    // The shared cancel branch takes a Ctrl-C and an empty paste alike: nothing
+    // has been written yet (the defaults land only once a key is secured).
+    const settings = { CLAUDE_MEM_OPENROUTER_BASE_URL: 'https://personal.example.test/v1' };
+    const result = runCase({ tty: true, settings, passwordAnswer: '' });
+    expect(result.error).toContain('Setup cancelled: no GPUStack API key was entered');
+    expect(result.passwordCalls).toEqual(['Paste your GPUStack API key:']);
+    expect(result.settings).toEqual(settings);
+  });
+
+  it('a saved cmem-gateway configuration with no key is kept as it is, with no prompt and no defaults write', () => {
+    // A GPUStack key pasted here would be sent to the saved gateway URL, and
+    // this build has no account flow to refill the key: keep the configuration
+    // and move on instead of asking or rewriting it.
+    const settings = {
+      CLAUDE_MEM_PROVIDER: 'openrouter',
+      CLAUDE_MEM_OPENROUTER_BASE_URL: 'https://cmem.ai/api/gateway/v1',
+    };
+    const result = runCase({
+      tty: true, settings,
+      options: { provider: 'openrouter', providerSource: 'flag' },
+      // A sentinel that would be saved if a regression prompted: the saved key
+      // would show up as a settings diff, so the failure is loud, not a hang.
+      passwordAnswer: 'SHOULD-NOT-BE-PROMPTED',
+    });
+    expect(result.error).toBeUndefined();
+    expect(result.provider).toBe('openrouter');
+    expect(result.passwordCalls).toEqual([]);
+    expect(result.settings).toEqual(settings);
+  });
+
+  it('a key held only in ~/.claude-mem/.env answers the gate, is never prompted for and never copied to settings.json', () => {
+    // The worker reads the .env file (unprefixed names), so a key held only
+    // there must count as held: no prompt, no abort — and the file keeps the
+    // key, since an exported or .env key is never copied to disk.
+    const result = runCase({
+      tty: true, settings: {},
+      envFile: 'OPENROUTER_API_KEY=env-held-key\n',
+      passwordAnswer: 'SHOULD-NOT-BE-PROMPTED',
+    });
+    expect(result.error).toBeUndefined();
+    expect(result.provider).toBe('openrouter');
+    expect(result.passwordCalls).toEqual([]);
+    expect(result.settings).toMatchObject({
+      CLAUDE_MEM_PROVIDER: 'openrouter',
+      CLAUDE_MEM_OPENROUTER_BASE_URL: GPUSTACK_URL,
+      CLAUDE_MEM_OPENROUTER_MODEL: GPUSTACK_MODEL,
+    });
+    expect(result.settings!.CLAUDE_MEM_OPENROUTER_API_KEY).toBeUndefined();
+    expect(result.envFileAfter).toBe('OPENROUTER_API_KEY=env-held-key\n');
   });
 });

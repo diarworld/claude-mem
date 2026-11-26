@@ -10,7 +10,7 @@ import {
   parseTeamBrainInvite,
   resolveTeamBrainUrl,
 } from '../../src/npx-cli/commands/teambrain.js';
-import { joinFailedMessage, parseTrialReadyBody } from '../../src/npx-cli/install/pairing.js';
+import { CMEM_PRO_BASE_URL, CMEM_PRO_MODEL, buildSyncConnectionSettings, buildTrialReadySettings, joinFailedMessage, parseTrialReadyBody } from '../../src/npx-cli/install/pairing.js';
 import {
   MOCK_HUB_URL,
   MOCK_INVITE_TOKEN,
@@ -304,6 +304,105 @@ describe('parseTrialReadyBody (poll parse shared with teambrain join)', () => {
       team: null,
       teambrainUrl: null,
     });
+  });
+
+  it('parses delivered observer credentials, and fills only the omitted endpoint and model from the shipped fallbacks', () => {
+    expect(parseTrialReadyBody({
+      status: 'ready',
+      user_id: 'user_123',
+      setup_token: 'setup_secret',
+      hub_url: 'https://sync.cmem.ai',
+      memory_key: `cm_pro_${'a'.repeat(32)}`,
+      memory_base_url: 'https://gateway.example.test/api/inference/v1',
+      memory_model: 'cmem-observer',
+      plan: 'pro',
+    })).toMatchObject({
+      userId: 'user_123',
+      setupToken: 'setup_secret',
+      memory: {
+        memoryKey: `cm_pro_${'a'.repeat(32)}`,
+        memoryBaseUrl: 'https://gateway.example.test/api/inference/v1',
+        memoryModel: 'cmem-observer',
+      },
+      plan: 'pro',
+    });
+    // A server that delivers a key but omits the endpoint and model: the
+    // shipped pairing defaults stand in, never the empty string or the setup
+    // token.
+    const delivered = parseTrialReadyBody({
+      status: 'ready',
+      user_id: 'user_123',
+      setup_token: 'setup_secret',
+      hub_url: 'https://sync.cmem.ai',
+      memory_key: `cm_pro_${'b'.repeat(24)}`,
+    });
+    expect(delivered!.memory).toEqual({
+      memoryKey: `cm_pro_${'b'.repeat(24)}`,
+      memoryBaseUrl: CMEM_PRO_BASE_URL,
+      memoryModel: CMEM_PRO_MODEL,
+    });
+  });
+
+  it('stages nothing for a memory key that is not a string, without throwing', () => {
+    // A malformed or mixed body (a valid sync connection beside garbage memory
+    // fields) must not stage garbage as the observer key: credentials come
+    // from the server or not at all.
+    for (const memory_key of [123, null, true, '   ']) {
+      const parsed = parseTrialReadyBody({
+        status: 'ready',
+        user_id: 'user_123',
+        setup_token: 'setup_secret',
+        hub_url: 'https://sync.cmem.ai',
+        memory_key,
+      });
+      expect(parsed!.memory).toBeNull();
+      expect(parsed!.setupToken).toBe('setup_secret');
+    }
+  });
+});
+
+describe('buildTrialReadySettings (memory staging)', () => {
+  const ready = (body: Record<string, unknown>) => parseTrialReadyBody({ status: 'ready', user_id: 'user_123', setup_token: 'setup_secret', hub_url: 'https://sync.cmem.ai', ...body })!;
+
+  it('stages delivered observer credentials beside the sync connection, and never the setup token', () => {
+    const delivered = `cm_pro_${'a'.repeat(32)}`;
+    const updates = buildTrialReadySettings(ready({
+      memory_key: delivered,
+      memory_base_url: 'https://gateway.example.test/api/inference/v1',
+      memory_model: 'cmem-observer',
+      plan: 'pro',
+      trial: { ends_at: '2026-12-01T00:00:00.000Z' },
+    }));
+    // The observer key is the delivered one; the setup token stays a sync
+    // token and never lands in the observer's key field.
+    expect(updates.CLAUDE_MEM_PRO_MEMORY_KEY).toBe(delivered);
+    expect(updates.CLAUDE_MEM_PRO_MEMORY_KEY).not.toBe('setup_secret');
+    expect(updates).toMatchObject({
+      CLAUDE_MEM_CLOUD_SYNC_TOKEN: 'setup_secret',
+      CLAUDE_MEM_CLOUD_SYNC_USER_ID: 'user_123',
+      CLAUDE_MEM_PRO_TRIAL_STATE: 'active',
+      CLAUDE_MEM_PRO_TRIAL_ENDS_AT: '2026-12-01T00:00:00.000Z',
+      CLAUDE_MEM_PRO_PLAN: 'pro',
+      CLAUDE_MEM_PRO_MEMORY_BASE_URL: 'https://gateway.example.test/api/inference/v1',
+      CLAUDE_MEM_PRO_MEMORY_MODEL: 'cmem-observer',
+      CLAUDE_MEM_PRO_FALLBACK_AT: '',
+    });
+    // The generic provider key is not the observer key's home: the staged
+    // credentials live behind the PRO keys only.
+    expect(updates.CLAUDE_MEM_OPENROUTER_API_KEY).toBeUndefined();
+  });
+
+  it('a sync-only account stages the sync connection and no observer key: nothing may stand in for the key', () => {
+    // The comment's promise, proven: without a delivered memory key there is
+    // no observer to stage, so the setup token (and any other value) is never
+    // written as one, and no trial/plan/fallback marker lands either.
+    const updates = buildTrialReadySettings(ready({}));
+    expect(updates).toEqual(buildSyncConnectionSettings(ready({})));
+    expect(updates.CLAUDE_MEM_PRO_MEMORY_KEY).toBeUndefined();
+    expect(updates.CLAUDE_MEM_OPENROUTER_API_KEY).toBeUndefined();
+    for (const key of Object.keys(updates)) {
+      expect(key.startsWith('CLAUDE_MEM_PRO_'), key).toBe(false);
+    }
   });
 });
 

@@ -482,6 +482,35 @@ describe('install in GUI mode (interactive TTY, no --provider)', () => {
     expect(opened).toEqual([`${workerBase}/?setup=1`]);
   });
 
+  it('a machine with a working configuration keeps it: the choice reports home-kept-existing and nothing rewrites the settings', async () => {
+    // The kept-existing path (design 4a): a persisted provider is never
+    // re-answered — no useSubscriptionAuth wipe, no GPUStack defaults rewrite —
+    // and the funnel names that outcome home-kept-existing.
+    writeFileSync(settingsPath, JSON.stringify({
+      ...baseSettings,
+      CLAUDE_MEM_PROVIDER: 'openrouter',
+      CLAUDE_MEM_OPENROUTER_API_KEY: 'kept-gateway-key',
+      CLAUDE_MEM_OPENROUTER_BASE_URL: 'https://gpustack.data.lmru.tech/v1',
+      CLAUDE_MEM_OPENROUTER_MODEL: 'glm-5.3-flash',
+    }, null, 2));
+    const install = runInstallCommand({});
+    await waitForStage('waiting-for-choice');
+    // The worker serves the machine as already configured: the page answers the choice itself.
+    expect((await browserState()).alreadyPro).toBe(true);
+    // The agent-install hand-off may write its own keys; the choice application must not.
+    const beforeChoice = readFileSync(settingsPath, 'utf8');
+    expect((await browserPost('/api/setup/choice', { branch: 'home', memoryBilling: 'existing' })).status).toBe(200);
+    await waitForStage('home-kept-existing');
+    expect(readFileSync(settingsPath, 'utf8')).toBe(beforeChoice);
+    expect((await browserPost('/api/setup/complete', {})).status).toBe(200);
+    await install;
+    expect(readFileSync(settingsPath, 'utf8')).toBe(beforeChoice);
+    expect(pairingStarts).toEqual([]);
+    expect(questions).toEqual([]);
+    expect(unexpected).toEqual([]);
+    expect(lines.join('\n')).toContain('Account:     Kept existing configuration');
+  });
+
   it('a --provider host install says no account is needed', async () => {
     await runInstallCommand({ provider: 'host' });
     expect(pairingStarts).toEqual([]);
