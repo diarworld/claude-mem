@@ -78,11 +78,11 @@ export function historyImportRunning(state: HistoryImportRunState): boolean {
 export const HISTORY_IMPORT_BATCH = 100;
 /** Owner-approved cap on setup's one hosted upload: the largest measured export was 262 KB, and all exports fit one
  * 1M-context call. Cloud enforces this against both compressed and uncompressed bytes, plus its offline 400k-token
- * budget. One definition for the worker's refusal (hosted-intent.ts) and the consent step's warning. */
+ * budget. One definition for the worker's refusal (hosted-intent.ts); the setup page no longer uploads. */
 export const INTENT_MAX_UPLOAD_BYTES = 2 * 1024 * 1024;
-export const SETUP_ACTIONS = ['choose_memory', 'choice_committed', 'start_import', 'skip_import', 'retry_scan', 'upload_allowed', 'upload_skipped'] as const;
+export const SETUP_ACTIONS = ['choose_memory', 'choice_committed', 'start_import', 'skip_import', 'retry_scan', 'upload_skipped'] as const;
 export type SetupAction = (typeof SETUP_ACTIONS)[number];
-export const SETUP_ERRORS = ['scan_failed', 'scan_retry_failed', 'upload_consent_failed', 'upload_too_large', 'usage_preference_failed', 'choice_failed', 'installer_failed', 'import_failed', 'complete_failed'] as const;
+export const SETUP_ERRORS = ['scan_failed', 'scan_retry_failed', 'upload_consent_failed', 'usage_preference_failed', 'choice_failed', 'installer_failed', 'import_failed', 'complete_failed'] as const;
 export type SetupError = (typeof SETUP_ERRORS)[number];
 export type SetupEventName = 'setup_step_viewed' | 'setup_step_transitioned' | 'setup_step_action' | 'setup_step_error' | 'setup_page_hidden' | 'setup_completed';
 /**

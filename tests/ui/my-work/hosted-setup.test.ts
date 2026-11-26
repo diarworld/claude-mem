@@ -226,8 +226,8 @@ describe('browser installation', () => {
   });
 });
 
-describe('hosted setup scan control', () => {
-  it('prechecks usage statistics under the progress meter, and locks it only for upload', () => {
+describe('local-only setup scan control', () => {
+  it('prechecks usage statistics under the progress meter, and locks it only while the worker is busy', () => {
     const app = fixture();
     const initial = app.renderScan(app.EMPTY_SETUP_DATA.scan);
     const checkbox = initial.match(/<input[^>]+type="checkbox"[^>]*>/)?.[0] ?? '';
@@ -237,69 +237,32 @@ describe('hosted setup scan control', () => {
     expect(initial.indexOf('<progress')).toBeLessThan(initial.indexOf(checkbox));
     expect(app.renderScan(scan({ phase: 'reading', improveProduct: true }))).toContain('checked=""');
     expect(app.renderScan(scan({ phase: 'reading', improveProduct: false }))).not.toContain('checked=""');
-    expect(initial).not.toContain('Find my focus areas');
-    const consent = app.renderScan(scan({ phase: 'awaiting-consent', agents: [{ id: 'codex', label: 'Codex', detected: true, prompts: 3 }] }));
-    expect(consent).toContain('Find my focus areas');
-    expect(consent).toContain('Include recent conversations');
-    expect(consent).not.toContain('Skip the scan');
-    // The shared Button carries "disabled:" in its classes, so look at the Discover button's own attributes. A missing
-    // button fails here, so the checks below can never pass on an empty match.
-    const discover = (html: string) => {
-      const button = html.match(/<button[^>]*>Find my focus areas[^<]*</)?.[0];
-      if (!button) throw new Error('The Discover button is missing');
-      return button;
-    };
-    const undetected = app.renderScan(scan({ phase: 'awaiting-consent', agents: [{ id: 'claude-code', label: 'Claude Code', detected: false, prompts: 2, canRunSetup: null, cannotRunReason: null }] }));
-    expect(undetected).toContain('Claude Code (2 messages)');
-    expect(discover(undetected)).not.toContain('aria-disabled="true"');
-    const sending = app.renderScan(scan({ phase: 'awaiting-consent', agents: [{ id: 'codex', label: 'Codex', detected: true, prompts: 3, canRunSetup: null, cannotRunReason: null }] }), null, false, null, null, true);
-    expect(sending).toContain('Sending your choice');
-    expect(discover(sending)).toContain('aria-disabled="true"');
+    // The upload offer is gone (local-only build): the worker's upload hold shows as the running
+    // scan it still is, with no cmem.ai question, no tool ticks and no forward action to answer.
+    const held = app.renderScan(scan({ phase: 'awaiting-consent', agents: [{ id: 'codex', label: 'Codex', detected: true, prompts: 3 }] }));
+    expect(held).not.toContain('Find my focus areas');
+    expect(held).not.toContain('Include recent conversations');
+    expect(held).not.toContain('What gets uploaded?');
+    expect(held).not.toContain('cmem.ai');
+    expect(held).toContain('Codex');
+    expect(held).toContain('3 messages');
+    expect(held).not.toContain('Sending your choice');
+    // A decline that could not be sent says so and offers the local continue again.
     const refusedConsent = app.renderScan(scan({ phase: 'awaiting-consent' }), null, false, null, { kind: 'refused', detail: 'Could not send your choice' });
     expect(refusedConsent).toContain('role="alert"');
     expect(refusedConsent).toContain('Couldn’t send your choice.');
-    expect(refusedConsent).toContain('your prompts may already have been uploaded');
+    expect(refusedConsent).toContain('Nothing was uploaded: setup can continue with new work.');
     expect(refusedConsent).toContain('<pre>Could not send your choice</pre>');
-    expect(app.renderScan(scan({ phase: 'awaiting-consent', agents: [{ id: 'codex', label: 'Codex', detected: true, prompts: 3, canRunSetup: null, cannotRunReason: null }] }))).toContain('Codex (3 messages)');
-    // The upload details are folded: kept in the markup, closed until opened.
-    const visibleConsent = consent.replace(/<div data-state="closed"[^>]*data-slot="collapsible-content"[^>]*>[\s\S]*?<\/div>/g, '');
-    expect(visibleConsent).toContain('Claude-Mem uses the last 30 days of conversations to find your projects and preferences.');
-    expect(visibleConsent).toContain('Selected messages are sent to cmem.ai and an AI provider.');
-    expect(visibleConsent).not.toContain('session IDs');
-    expect(visibleConsent).not.toContain('timestamps');
-    expect(consent).toContain('What gets uploaded?');
-    expect(consent).toContain('The full text of your messages from the last 30 days in the selected tools');
-    expect(consent).toContain('session IDs, project names, folder paths and timestamps');
+    expect(refusedConsent).toMatch(/<button[^>]*>Continue with new work/);
     expect(app.renderScan(scan({ phase: 'saving' }))).not.toContain('disabled=""');
     expect(app.renderScan(scan({ phase: 'uploading' }))).toContain('disabled=""');
   });
 
-  it('shows one forward action for the selected conversations and for starting with new work', () => {
+  it('names no cmem.ai upload anywhere on the scan, whatever its phase', () => {
     const app = fixture();
-    const populated = app.renderScan(scan({ phase: 'awaiting-consent', agents: [{ id: 'codex', label: 'Codex', detected: true, prompts: 3 }] }));
-    expect(populated).toMatch(/<button[^>]*class="[^"]*primary"[^>]*>Find my focus areas/);
-    expect(populated).not.toContain('Skip the scan');
-    const empty = app.renderScan(scan({ phase: 'awaiting-consent', agents: [] }));
-    expect(empty).toMatch(/<button[^>]*class="[^"]*primary"[^>]*>Continue with new work/);
-  });
-
-  it('explains how to reduce an oversized upload and keeps the inclusion control available', () => {
-    const app = fixture();
-    const agent = (id: string, uploadBytes: number) => ({ id, label: id, detected: true, prompts: 3, canRunSetup: null, cannotRunReason: null, uploadBytes });
-    const button = (html: string, label: string) => {
-      const found = html.match(new RegExp(`<button[^>]*>${label}[^<]*<`))?.[0];
-      if (!found) throw new Error(`The ${label} button is missing`);
-      return found;
-    };
-    const halfCap = 1024 * 1024;
-    const fits = app.renderScan(scan({ phase: 'awaiting-consent', agents: [agent('codex', halfCap), agent('claude-code', halfCap)] }));
-    expect(fits).not.toContain('Choose fewer tools');
-    expect(button(fits, 'Find my focus areas')).not.toContain('aria-disabled="true"');
-    const over = app.renderScan(scan({ phase: 'awaiting-consent', agents: [agent('codex', halfCap), agent('claude-code', halfCap + 1)] }));
-    expect(over).toContain('id="setup-waiting-line" class="setup-waiting">Choose fewer tools or turn off recent conversations to continue.');
-    expect(button(over, 'Find my focus areas')).toContain('aria-disabled="true"');
-    expect(button(over, 'Find my focus areas')).toContain('aria-describedby="setup-waiting-line"');
-    expect(over).toContain('Include recent conversations');
+    for (const phase of ['idle', 'reading', 'checking', 'saving', 'organizing', 'awaiting-consent', 'uploading', 'done']) {
+      expect(app.renderScan(scan({ phase, agents: [{ id: 'codex', label: 'Codex', detected: true, prompts: 3 }] })), phase).not.toContain('cmem.ai');
+    }
   });
 
   it('shows the skipped-step message only when the person actually skipped', () => {

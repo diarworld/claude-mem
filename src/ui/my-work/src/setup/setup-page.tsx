@@ -4,7 +4,7 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { CmemMark } from '@/components/brand'
 import { LOCALES, LOCALE_NAMES, useI18n, type Locale } from '@/lib/i18n'
-import { EMPTY_SETUP_DATA, connectionFailureAbove, localSetupSource, setupToolsForInstall, toSetupFailure, uploadTooLarge, type SetupChoice, type SetupData, type SetupFailure, type SetupSource } from './setup-data'
+import { EMPTY_SETUP_DATA, connectionFailureAbove, localSetupSource, setupToolsForInstall, toSetupFailure, type SetupChoice, type SetupData, type SetupFailure, type SetupSource } from './setup-data'
 import { backWaitsFor, choiceLocked, guardStep, hydrateSetupChoice, initialFlowState, previousStep, scanMovesOn, type SetupFlowState, type SetupStep } from './setup-flow'
 import type { SampleFailure, SampleScanStop } from './setup-sample'
 import { ChoiceScreen } from './screens/choice-screen'
@@ -29,10 +29,10 @@ function useSetupSource(): SetupSource | null {
   useEffect(() => {
     if (!SAMPLE_REQUESTED) return
     let current = true
-    // `&scan=<percent>` holds the scan there; `&scan=consent|failed` stops it at the upload question or a failure.
+    // `&scan=<percent>` holds the scan there; `&scan=failed` stops it at a failure.
     // `&fail=` and `&installer=on`: setup-sample.ts's header says what each plays.
     const scan = PARAMS.get('scan')
-    const scanStop = (['consent', 'failed'] as const).find((stop): stop is SampleScanStop => stop === scan)
+    const scanStop = (['failed'] as const).find((stop): stop is SampleScanStop => stop === scan)
     const fail = (['install', 'installer', 'choice'] as const).find((kind): kind is SampleFailure => kind === PARAMS.get('fail'))
     const installer = PARAMS.get('installer') === 'on'
     import('./setup-sample').then(({ createSampleSetupSource }) => { if (current) setSource(createSampleSetupSource(PARAMS.get('sample') === 'new', scan !== null && !scanStop ? Number(scan) : null, PARAMS.get('agent') === 'none', { scanStop, fail, installer })) })
@@ -98,7 +98,8 @@ export default function SetupPage({ onComplete }: { onComplete: () => void }) {
     setConsentError(null)
     setConsentSending(true)
     const failed = telemetry.failure('upload_consent_failed')
-    telemetry.action(upload ? 'upload_allowed' : 'upload_skipped')
+    // The only answer this page sends is the decline (the scan stays local).
+    telemetry.action('upload_skipped')
     try {
       // The sharing choice travels with the consent, so a queued preference request cannot lose a race with the upload.
       // Either answer ends with the worker reporting the scan done, which moves the page on (scanMovesOn).
@@ -108,6 +109,11 @@ export default function SetupPage({ onComplete }: { onComplete: () => void }) {
       setConsentError(toSetupFailure(error))
     } finally { consentPending.current = false; setConsentSending(false) }
   }
+  // The scan's upload question is answered for everyone (2026-11-26 ruling: the scan stays local): when the worker
+  // holds the scan for an upload choice, the page declines — nothing leaves this computer — and the scan finishes
+  // locally. The screen no longer offers the choice; a decline that could not be sent shows its retry there.
+  const scanAsksForUpload = data.scan.phase === 'awaiting-consent'
+  useEffect(() => { if (scanAsksForUpload) void confirmUpload(false) }, [scanAsksForUpload])
 
   const [retrying, setRetrying] = useState(false)
   const [retryError, setRetryError] = useState<SetupFailure | null>(null)
@@ -165,10 +171,6 @@ export default function SetupPage({ onComplete }: { onComplete: () => void }) {
   useEffect(() => {
     if (source?.kind === 'local') telemetry.view(step, { branch: flow.branch, branch_confirmed: branchConfirmed })
   }, [source, step, flow.branch, branchConfirmed, telemetry])
-  // After the view effect, so the error counts against the consent step. It reads every tool the step offers, all
-  // ticked as it opens, which is when the consent step first shows its over-the-cap warning (scan-screen.tsx).
-  const consentOverCap = data.scan.phase === 'awaiting-consent' && uploadTooLarge(data.scan.agents)
-  useEffect(() => { if (consentOverCap) telemetry.error('upload_too_large') }, [consentOverCap, telemetry])
   const tools = useMemo(() => availableTools.filter((tool) => tool.kind === 'local'), [availableTools])
   const pickedTools = useMemo(() => tools.filter((tool) => flow.finishTools.includes(tool.id)), [tools, flow.finishTools])
 
@@ -290,7 +292,7 @@ export default function SetupPage({ onComplete }: { onComplete: () => void }) {
       try { await source!.configureInstall(selection) } catch (error) { failed(); throw error }
     }} onContinue={() => update({ installReview: false }, 'scan')} />,
     scan: () => <ScanScreen scan={{ ...data.scan, improveProduct: improveProduct ?? data.scan.improveProduct }} back={back}
-      onImproveProductChange={(checked) => void changeImproveProduct(checked)} onConfirmUpload={(upload, agents) => void confirmUpload(upload, agents)}
+      onImproveProductChange={(checked) => void changeImproveProduct(checked)} onConfirmUpload={() => void confirmUpload(false)}
       consentError={consentError} consentSending={consentSending} preferenceError={preferenceError}
       onRetry={() => void retryScan()} retrying={retrying} retryError={retryError}
       // Never while "Try again" is starting the scan (the button is dimmed then too): a skip would leave that new scan

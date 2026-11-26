@@ -49,8 +49,8 @@ const RECORDS: MemoryResult[] = [
   { id: 'm3', title: 'Feed stutter traced to image decoding', body: 'Large thumbnails were decoded on the main thread. Moving decoding off the main thread brought scrolling back to 60 fps on the test phone.', project: 'Mobile app', agent: 'Gemini CLI', session: 'Feed performance', date: '2026-10-14' },
 ]
 
-/** Where `&scan=` stops the sample scan instead of finishing it. */
-export type SampleScanStop = 'consent' | 'failed'
+/** Where `&scan=` stops the sample scan instead of finishing it. The upload offer is gone: the scan only stops on a failure. */
+export type SampleScanStop = 'failed'
 /** Which hand-off `&fail=` makes fail once. */
 export type SampleFailure = 'install' | 'installer' | 'choice'
 /** Invented failure words for the sample, shaped like the worker's own. */
@@ -149,11 +149,6 @@ export function createSampleSetupSource(newInstall: boolean, holdScanAtPercent: 
       }
       const done = share === 1
       if (holdScanAtPercent !== null && share === holdScanAtPercent / 100) clearInterval(timer)
-      if (done && stopAt === 'consent') {
-        clearInterval(timer)
-        publish({ scan: { ...data.scan, agents, percent: 100, phase: 'awaiting-consent', done: false, error: null } })
-        return
-      }
       publish({ scan: { ...data.scan, agents, percent: Math.floor(share * 100), phase: done ? 'done' : share < 0.5 ? 'reading' : share < 0.95 ? 'checking' : 'saving', done, error: null } })
       if (!done) return
       clearInterval(timer)

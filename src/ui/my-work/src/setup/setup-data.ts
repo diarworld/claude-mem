@@ -6,7 +6,7 @@ import { choiceLocked } from './setup-flow'
 import { revealFromSnapshot, type SnapshotWithSetup, type WorkerExtraction } from './setup-reveal'
 import { noteFor, searchUrl, toMemoryResults, type MemoryResult, type WorkerSearchResult } from './setup-search'
 import { applySseFrame } from '../live/parse-sse-frame'
-import { INTENT_MAX_UPLOAD_BYTES, type SetupBranch, type SetupEvent, type SetupMemoryBilling, type SetupScanPhase, type SetupStatus } from '../../../../shared/setup-funnel.ts'
+import { type SetupBranch, type SetupEvent, type SetupMemoryBilling, type SetupScanPhase, type SetupStatus } from '../../../../shared/setup-funnel.ts'
 import { hasPendingInstallSetup, type SetupInstallSelection, type SetupInstallState } from '../../../../shared/setup-install.ts'
 
 /** Mirrors the worker's SetupScanState (src/services/prompt-import/setup-scan.ts), trimmed to what the screen shows. */
@@ -16,17 +16,8 @@ export interface SetupScanAgent {
   canRunSetup: boolean | null
   /** Why it cannot, e.g. "Gemini is installed, but this Google account can't use it: ...". */
   cannotRunReason: string | null
-  /** The JSON bytes this tool's prompts add to the hosted upload; 0 from an older worker. */
+  /** The JSON bytes this tool's prompts would add to the hosted upload; 0 from an older worker. The page never uploads. */
   uploadBytes: number
-}
-
-/**
- * Whether these tools' prompts are too much for setup's one hosted upload. The worker refuses such an upload before it
- * sends anything, so the consent step says it while the person can still untick a tool. Each tool's share is a lower
- * bound on its part of the upload, so this never warns about an upload that would fit.
- */
-export function uploadTooLarge(agents: Pick<SetupScanAgent, 'uploadBytes'>[]): boolean {
-  return agents.reduce((sum, agent) => sum + agent.uploadBytes, 0) > INTENT_MAX_UPLOAD_BYTES
 }
 
 export type { SetupScanPhase }
@@ -36,7 +27,7 @@ export interface SetupScanView {
   errorKind?: SetupFailureKind
   /** Why hosted extraction was skipped (budget/rate limit) while setup finished locally. */
   hostedNotice?: string | null
-  /** Which tools' prompts were sent to cmem.ai: null before the person answers, [] when nothing left this machine. */
+  /** Which tools' prompts ever left this machine: null before the scan's upload hold was answered, [] when nothing left. */
   uploadedAgents: string[] | null
 }
 /** The owner's newest typed prompts, quoted as typed (SetupScanState.recentPrompts). */
@@ -113,7 +104,8 @@ export interface SetupSource {
   retryScan(): Promise<void>
   /** Changes the hosted setup results preference without pausing the scan or upload. */
   setImproveProduct(improveProduct: boolean): Promise<void>
-  /** Answers the upload question: true sends the scanned prompts to cmem.ai, false keeps them on this machine. */
+  /** Answers the worker's upload hold. This page always declines (the scan stays local); the sample keeps the
+   * worker's full answer contract so design previews can still play both sides. */
   confirmUpload(upload: boolean, agents?: string[], improveProduct?: boolean): Promise<void>
   /** Hands the storage choice to the installer waiting in the terminal (POST /api/setup/choice). */
   choose(choice: SetupChoice): Promise<void>

@@ -150,9 +150,10 @@ describe('setup scan bottom row', () => {
       expect(label.includes('disabled=""'), phase).toBe(phase === 'uploading' || phase === 'done');
     }
     expect(box(app.renderScan('done'))).toContain('The scan is done, and this choice was saved with it.');
-    expect(box(app.renderScan('reading'))).not.toContain('Shared with cmem.ai');
-    expect(box(app.renderScan('organizing'))).not.toContain('Shared with cmem.ai');
-    expect(box(app.renderScan('awaiting-consent'))).toContain('Shared with cmem.ai only when you include conversations.');
+    for (const phase of SCAN_PHASES) {
+      // The upload offer is gone from the scan (local-only build): its cmem.ai note is gone with it.
+      expect(box(app.renderScan(phase)), phase).not.toContain('Shared with cmem.ai');
+    }
   });
 
   it('dims "Continue with new work" while "Try again" is starting the scan, and only then', () => {

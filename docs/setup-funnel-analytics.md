@@ -28,7 +28,11 @@ motion skips `launch` and moves directly to `workspace`.
 - Finish Setup lists the tools the install step connected. The import screen of
   older releases is gone from the page; the history upload remains a
   worker-side step, and `start_import` / `skip_import` stay valid action codes
-  for events recorded by older releases.
+  for events recorded by older releases. The scan's upload offer is also gone
+  (installer 16.1.5, local-only scan): the page answers the worker's upload
+  hold with `upload_skipped` for everyone, and `upload_allowed` /
+  `upload_too_large` are retired with it, like the checkout-era codes before
+  them.
 - A return to a screen creates a fresh visit. A hidden tab does not.
 
 Historical version notes. `setup_funnel_version = 2` starts with installer
@@ -60,8 +64,9 @@ no prompts, paths, URLs, tokens, selected tool lists, or exception text are sent
 - `setup_step_transitioned`: the originating visit plus `to_step` and
   `direction: forward | back`. Each visit has at most one exit.
 - `setup_step_action`: a closed action code, including `choice_committed`,
-  `choose_memory`, `start_import`, `skip_import`, `retry_scan`,
-  `upload_allowed`, and `upload_skipped`.
+  `choose_memory`, `start_import`, `skip_import`, `retry_scan`, and
+  `upload_skipped` (the scan's local-only decline; `upload_allowed` left with
+  the removed upload offer).
 - `setup_step_error`: a closed `error_code`; never the error message.
 - `setup_page_hidden`: the browser left or hid the page. It does not prove
   abandonment or its cause.
