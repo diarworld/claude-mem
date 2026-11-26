@@ -28,7 +28,6 @@ export const setupZh: Record<string, string> = {
   'Skip to content': '跳转到内容',
   'Setup progress': '设置进度',
   'Memory': '记忆',
-  'Checkout': '结账',
   'Finish Setup': '完成设置',
 
   // Common Actions
@@ -72,16 +71,8 @@ export const setupZh: Record<string, string> = {
   'Memory stays on this computer, written by your internal model gateway.': '记忆保留在这台电脑上，由你的内部模型网关写入。',
   'A modern silver desktop computer displaying the CMEM brain mark': '一台显示 CMEM 大脑标志的现代银色台式电脑',
 
-  // Persona names
-  'Cracked Dev': '顶级高产开发者',
-  'Heavy AI User': '重度 AI 用户',
-  'Medium AI User': '中度 AI 用户',
-  'Light AI User': '轻度 AI 用户',
-
   // Step 6: Finish Setup
   'URL copied.': 'URL 已复制。',
-  'Select and copy the URL above.': '请选择并复制上方的 URL。',
-  'Copy CMEM URL for {toolName}': '复制 {toolName} 的 CMEM URL',
   'Copy URL': '复制 URL',
   'Copying…': '正在复制…',
   'Copied': '已复制',

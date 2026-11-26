@@ -27,7 +27,6 @@ export const setupRu: Record<string, string> = {
   'Skip to content': 'К содержимому',
   'Setup progress': 'Прогресс настройки',
   'Memory': 'Память',
-  'Checkout': 'Оформление',
   'Finish Setup': 'Завершение настройки',
 
   // Common Actions
@@ -71,16 +70,8 @@ export const setupRu: Record<string, string> = {
   'Memory stays on this computer, written by your internal model gateway.': 'Память остаётся на этом компьютере, записывает её ваш внутренний модельный шлюз.',
   'A modern silver desktop computer displaying the CMEM brain mark': 'Современный серебристый настольный компьютер с логотипом-мозгом CMEM',
 
-  // Persona names
-  'Cracked Dev': 'мощный разработчик',
-  'Heavy AI User': 'активный пользователь ИИ',
-  'Medium AI User': 'умеренный пользователь ИИ',
-  'Light AI User': 'редкий пользователь ИИ',
-
   // Step 6: Finish Setup
   'URL copied.': 'URL скопирован.',
-  'Select and copy the URL above.': 'Выделите и скопируйте URL выше.',
-  'Copy CMEM URL for {toolName}': 'Скопировать CMEM URL для {toolName}',
   'Copy URL': 'Скопировать URL',
   'Copying…': 'Копирование…',
   'Copied': 'Скопировано',

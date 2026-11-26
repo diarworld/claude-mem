@@ -43,7 +43,6 @@ const COLLECTED_FIELDS = [
   'is_update        whether an install was an update',
   'interactive      whether the installer ran in a TTY',
   'provider_source  how the installer chose the provider (flag / default / persisted / prompt / browser)',
-  'phase            installer OAuth pairing phase (login / enrollment / deferred)',
   'install_method   npm / bun / pnpm / yarn (launcher of the CLI)',
   'bun_version / uv_version / claude_code_version',
   '                 toolchain versions detected during install',
@@ -90,10 +89,6 @@ const COLLECTED_FIELDS = [
 const EVENT_NAMES = [
   'install_completed',
   'install_failed',
-  'installer_oauth_started',
-  'installer_oauth_completed',
-  'installer_oauth_timeout',
-  'installer_oauth_start_failed',
   'uninstall_completed',
   'auto_update_applied',
   'auto_update_failed',

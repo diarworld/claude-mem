@@ -56,9 +56,6 @@ import {
   type TrialReadyResult,
 } from '../install/pairing.js';
 
-declare const __DEFAULT_PACKAGE_VERSION__: string;
-const CLI_VERSION = typeof __DEFAULT_PACKAGE_VERSION__ !== 'undefined' ? __DEFAULT_PACKAGE_VERSION__ : '0.0.0-dev';
-
 const TEAMBRAIN_REQUEST_TIMEOUT_MS = 15_000;
 const WORKER_REQUEST_TIMEOUT_MS = 5_000;
 /** How long `join` and `leave` wait for the restarted worker to report its sync state. */
@@ -585,7 +582,7 @@ async function runJoin(argv: string[]): Promise<number> {
     log.info('AGENT: show this link to the user. This command waits until they approve this device.');
   }
 
-  const outcome = await waitForInstallerPairing(pairing, 'teambrain_join', CLI_VERSION);
+  const outcome = await waitForInstallerPairing(pairing);
   if (!outcome || outcome.kind !== 'ready') return 1;
 
   const settingsProblemNow = unreadableSettingsProblem();

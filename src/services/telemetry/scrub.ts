@@ -38,10 +38,9 @@ export const ALLOWED_PROPERTY_KEYS: Set<string> = new Set([
   'is_update',
   // Install funnel shape — install_method is a package-manager enum parsed
   // from npm_config_user_agent, the *_version keys are tool version strings.
-  // phase is the installer OAuth pairing phase, a closed enum
-  // (login | enrollment) on installer_oauth_timeout and
-  // installer_oauth_start_failed — the only pairing events left, sent by the
-  // teambrain join flow.
+  // phase is a closed pairing-phase enum; the pairing client now serves only
+  // the teambrain join, which reports no events, so the key is kept here as
+  // scrubber defense, not because an event sends it.
   'phase',
   'install_method',
   'interactive',

@@ -1,8 +1,8 @@
 /**
  * The claude-mem sign-in client for `npx claude-mem teambrain join`: start an
- * OAuth pairing on cmem.ai, show the device code, poll until the browser flow
- * answers, and apply what a ready poll delivers (cloud sync connection,
- * memory credentials, plan).
+ * OAuth pairing on cmem.ai, show the device code, and poll until the browser
+ * flow answers. Teambrain applies what a ready poll delivers (the cloud sync
+ * connection, and the observer keys when the account carries them).
  *
  * The bodies below moved verbatim out of commands/install.ts, which no longer
  * imports them; teambrain joins a team through the same pairing, so trimming
@@ -12,15 +12,12 @@
 import * as p from '@clack/prompts';
 import { styleText } from 'node:util';
 import { hostname } from 'os';
-import { captureCliEvent } from '../../services/telemetry/cli-telemetry.js';
 import { cmemProOrigin } from '../../shared/cmem-gateway.js';
-import { USER_SETTINGS_PATH } from '../../shared/paths.js';
 import { intentCredentialHeaders, readIntentCredentials } from '../../shared/intent-credentials.js';
 import { relayedLine } from '../../shared/relayed-text.js';
 import { parseTeamBrainTeamRef, type TeamBrainTeamRef } from '../../shared/teambrain.js';
 import type { DeliveredCmemMemoryCredentials } from '../cmem-memory-credentials.js';
 import { isInteractive, log } from './cli-io.js';
-import { mergeSettings } from './settings-io.js';
 
 // --- claude-mem OAuth pairing ----------------------------------------------
 // Every installer authenticates through the same GitHub/Google OAuth screen as
@@ -55,11 +52,6 @@ const OAUTH_DEFAULT_POLL_INTERVAL_S = 3;
 type InstallerPollStage = 'awaiting_login' | 'awaiting_checkout' | 'awaiting_approval';
 /** `teambrain_seat`: a TeamBrain seat, which grants cloud sync and no CMEM Pro observer. */
 type TrialPlan = 'trial' | 'pro' | 'none' | 'teambrain_seat' | 'cloud_sync';
-/**
- * What a poll loop waits for. `login` returns once the browser signs in;
- * `enrollment` (CMEM Pro) and `teambrain_join` only once credentials are ready.
- */
-export type InstallerPairingPhase = 'login' | 'enrollment' | 'teambrain_join';
 
 export interface InstallerOAuthPairing {
   pairingId: string;
@@ -74,8 +66,6 @@ export interface InstallerOAuthPairing {
    * Undefined when the server did not report one (fallback budget applies).
    */
   expiresAt?: number;
-  /** Defensive compatibility for a server that returns ready during login. */
-  delivered?: TrialReadyResult;
 }
 
 function parseBrowserUrl(value: unknown, expectedPath: string): URL | null {
@@ -213,9 +203,9 @@ export function parseInstallerOAuthStartBody(body: unknown): InstallerOAuthPairi
 
 export type OAuthStartFailure = 'http_error' | 'network' | 'timeout' | 'bad_body' | 'credentials';
 
-// Why the most recent startInstallerOAuthPairing() returned null. A closed enum
-// for the installer_oauth_start_failed telemetry event — never a URL, status
-// text, or error message.
+// Why the most recent startInstallerOAuthPairing() returned null. A closed
+// enum for the user-visible start-failure message (teambrain's
+// startFailureMessage) — never a URL, status text, or error message.
 let lastStartFailure: OAuthStartFailure | null = null;
 let lastStartErrorMessage: string | null = null;
 export function lastOAuthStartFailure(): OAuthStartFailure | null {
@@ -316,8 +306,9 @@ export async function startInstallerOAuthPairing(
 }
 
 /**
- * Everything a ready poll delivers. The memory credentials are staged before
- * provider activation so one-shot delivery cannot be lost after enrollment.
+ * Everything a ready poll delivers. teambrain stages these settings itself;
+ * the memory credentials, when the server sent them, are the CMEM Pro
+ * observer's.
  */
 export interface TrialReadyResult {
   userId: string;
@@ -509,32 +500,20 @@ function sleepUnlessCancelled(ms: number, isCancelled: () => boolean): Promise<v
 
 export async function waitForInstallerPairing(
   pairing: InstallerOAuthPairing,
-  phase: InstallerPairingPhase,
-  version: string,
 ): Promise<InstallerPollOutcome | null> {
   const startedAt = Date.now();
-  const rerun = phase === 'teambrain_join' ? 'Run npx claude-mem teambrain join again' : 'Run the installer again';
-  // The login phase must never name CMEM Pro. Logging in is required of every
-  // user and happens BEFORE the provider choice, so naming a paid plan here
-  // reads as an upsell attached to a mandatory step and muddies the funnel.
-  // The poll loop prints whatever stage the server reports, so a server-side
-  // 'awaiting_checkout' during login would otherwise leak the Pro wording.
-  // A TeamBrain join is neither: the server is adding this account to a team.
+  // The loop serves the teambrain join only: it ends with the ready payload
+  // (or the join's refusal), never at sign-in, and a timeout sends the person
+  // back to `teambrain join` rather than the installer.
+  const rerun = 'Run npx claude-mem teambrain join again';
+  // Whatever stage the server reports is printed; the join's invite is
+  // redeemed at device approval, on a page that names the team.
   const stageMessages: Record<InstallerPollStage, string> = {
-    awaiting_login: phase === 'teambrain_join'
-      ? 'Waiting for you to sign in in the browser…'
-      : 'Waiting for OAuth login in the browser…',
-    awaiting_checkout: phase === 'login'
-      ? 'Waiting for the browser to finish signing you in…'
-      : phase === 'teambrain_join'
-        ? 'Waiting for the browser to finish joining the team…'
-        : 'Waiting for CMEM Pro setup in the browser…',
-    // A join's invite is redeemed at device approval, on a page that names the team.
-    awaiting_approval: phase === 'teambrain_join'
-      ? `Approve this device on the page (code ${pairing.userCode}) to join the team…`
-      : `Enter code ${pairing.userCode} in the browser to approve this device…`,
+    awaiting_login: 'Waiting for you to sign in in the browser…',
+    awaiting_checkout: 'Waiting for the browser to finish joining the team…',
+    awaiting_approval: `Approve this device on the page (code ${pairing.userCode}) to join the team…`,
   };
-  let stage: InstallerPollStage = phase === 'enrollment' ? 'awaiting_checkout' : 'awaiting_login';
+  let stage: InstallerPollStage = 'awaiting_login';
   log.info(stageMessages[stage]);
 
   let cancelled = false;
@@ -559,15 +538,12 @@ export async function waitForInstallerPairing(
 
   try {
     let consecutiveFailures = 0;
-    // The deadline belongs to the pairing, not the phase: login and enrollment
-    // share one pairing, so both poll until the server's own expiry.
     const deadline = pairing.expiresAt ?? (startedAt + OAUTH_POLL_BUDGET_MS);
     while (Date.now() < deadline) {
       if (cancelled) return null;
       const result = await pollInstallerPairingOnce(pairing);
       if (cancelled) return null;
 
-      if (result.kind === 'authenticated' && phase === 'login') return result;
       if (result.kind === 'ready') return result;
       if (result.kind === 'join_failed') {
         log.error(joinFailedMessage(result));
@@ -593,15 +569,6 @@ export async function waitForInstallerPairing(
       await sleepUnlessCancelled(pairing.pollIntervalMs, () => cancelled);
     }
 
-    // The telemetry `phase` enum is the installer's (login / enrollment /
-    // deferred); a TeamBrain join is not reported.
-    if (phase !== 'teambrain_join') {
-      await captureCliEvent('installer_oauth_timeout', {
-        version,
-        phase,
-        duration_ms: Date.now() - startedAt,
-      });
-    }
     log.error(`Browser authorization timed out. ${rerun}.`);
     return null;
   } finally {
@@ -622,26 +589,6 @@ export async function waitForInstallerPairing(
  * function once applied) is gone from this client, so a ready pairing only
  * writes the account's own connection settings.
  */
-export function saveReadyPairing(result: TrialReadyResult): boolean {
-  return mergeSettings(buildTrialReadySettings(result), USER_SETTINGS_PATH);
-}
-
-/** Required account step. OAuth completes before provider choice and never chooses a paid provider. */
-export async function completeInstallerOAuthLogin(
-  pairing: InstallerOAuthPairing,
-  version: string,
-): Promise<boolean> {
-  const result = await waitForInstallerPairing(pairing, 'login', version);
-  if (!result) return false;
-  if (result.kind === 'ready') {
-    if (!saveReadyPairing(result)) return false;
-    pairing.delivered = result;
-  }
-  log.success('OAuth login complete.');
-  await captureCliEvent('installer_oauth_completed', { version });
-  return result.kind === 'authenticated' || result.kind === 'ready';
-}
-
 export function noteDeviceCode(
   pairing: InstallerOAuthPairing,
   instruction: string = 'Enter this code in the browser to approve this device.',

@@ -126,10 +126,6 @@
 .cmem-setup .setup-back:not([aria-disabled="true"]):hover { color: var(--ink); text-decoration: underline; }
 .setup-waiting { max-width: 360px; color: var(--muted); font-size: 15px; line-height: 1.4; text-align: right; }
 .setup-actions.is-bar { padding-top: 20px; border-top: 1px solid var(--line); }
-.reveal-trial { margin-top: 24px; padding-top: 18px; border-top: 1px solid var(--line); }
-.reveal-trial p { margin: 0 0 4px; font-weight: 600; }
-.reveal-trial small { color: var(--muted); font-size: 0.9375rem; }
-.reveal-trial .setup-actions { margin-top: 12px; }
 /* A hint under a choice that turns a button on (D6). */
 .setup-hint { display: flex; align-items: flex-start; gap: 8px; margin-top: 8px; color: var(--muted); font-size: 15px; line-height: 1.4; }
 .setup-hint svg { flex: none; width: 18px; height: 18px; margin-top: 1px; }
@@ -329,7 +325,6 @@
 .memory-card:hover { border-color: #8f95aa; background: #f8f8fe; }
 .memory-card:has(.memory-radio:focus-visible) { outline: 3px solid var(--focus); outline-offset: 4px; }
 .memory-card:has(.memory-radio:checked) { border: 2px solid var(--violet); background: var(--tint); }
-.memory-card.is-go:not(:has(.memory-radio:checked)) { background: #fafbff; }
 .memory-card-marks { position: absolute; inset: 16px 16px auto 16px; z-index: 3; display: flex; align-items: center; justify-content: space-between; pointer-events: none; }
 .radio-mark { display: grid; place-items: center; width: 28px; height: 28px; border: 2px solid var(--edge); border-radius: 50%; background: #fff; color: transparent; }
 .radio-mark svg { width: 16px; height: 16px; }
@@ -341,82 +336,15 @@
 .memory-artwork { display: block; width: 100%; height: 100%; object-fit: contain; }
 .memory-art-home::before { content: ""; position: absolute; inset: 16px 40px; background: radial-gradient(ellipse at 50% 55%, rgba(248, 196, 150, .55), rgba(252, 228, 205, .3) 45%, transparent 76%); filter: blur(22px); pointer-events: none; }
 .memory-art-home > .memory-artwork { position: relative; z-index: 1; }
-.memory-art-go > .memory-artwork { position: absolute; z-index: 1; width: min(200px, 44%); height: 100%; left: 50%; top: 0; transform: translateX(-50%); }
-.agent-orbit { position: absolute; inset: 0; z-index: 1; margin: 0; padding: 0; list-style: none; }
-.agent { position: absolute; display: flex; flex-direction: column; align-items: center; gap: 2px; width: 24%; transform: translate(-50%, -50%); font-size: 14px; line-height: 1.25; color: #343a4e; }
-.agent span { white-space: nowrap; }
-.agent img { display: block; width: 34px; height: 34px; object-fit: contain; filter: drop-shadow(0 1px 2px rgba(40, 54, 91, .12)); }
-.agent:nth-child(odd) { left: 15%; }
-.agent:nth-child(even) { left: 85%; }
-.agent:nth-child(1), .agent:nth-child(2) { top: 12%; }
-.agent:nth-child(3), .agent:nth-child(4) { top: 37%; }
-.agent:nth-child(5), .agent:nth-child(6) { top: 62%; }
-.agent:nth-child(7), .agent:nth-child(8) { top: 87%; }
 .card-copy { display: flex; flex-direction: column; align-items: center; padding: 6px 28px 22px; }
 .card-title { font-size: 26px; font-weight: 650; line-height: 1.2; letter-spacing: -.02em; }
-.card-price { margin-top: 2px; color: var(--muted); font-size: 18px; }
 .card-gets { display: grid; gap: 6px; margin-top: 14px; color: var(--ink); font-size: 16px; line-height: 1.35; text-align: left; }
 .card-gets > span { display: flex; align-items: flex-start; gap: 10px; }
 .card-gets svg { flex: none; width: 18px; height: 18px; margin-top: 1px; color: var(--violet); }
-.cloud-sync-offers { max-width: 1068px; min-width: 0; margin: 22px auto 0; padding: 14px 18px; border: 1px solid var(--line); border-radius: 16px; text-align: left; }
-.cloud-sync-offers legend { padding: 0 6px; font-size: 18px; font-weight: 600; }
-.cloud-sync-offer { display: flex; gap: 12px; align-items: center; min-height: 44px; padding: 8px; border-radius: 8px; cursor: pointer; font-size: 16px; line-height: 1.4; }
-.cloud-sync-offer:has(input:checked) { background: var(--tint); }
-.cloud-sync-offer:has(input:focus-visible) { outline: 3px solid var(--focus); outline-offset: 2px; }
-.cloud-sync-offer input { flex: none; width: 18px; height: 18px; accent-color: var(--violet); }
-.cloud-sync-offers p { margin: 8px; color: var(--muted); font-size: 15px; line-height: 1.5; }
-
-/* Token Savings result (PROTO #route-savings-result): title, then its evidence (E6). */
-.setup-main.step-savings { width: min(880px, calc(100% - 64px)); }
-.step-savings .page-heading { margin-bottom: 10px; }
-.step-savings .persona { margin-bottom: 20px; font-size: 18px; font-weight: 550; }
-.step-savings .page-heading + .panel { margin-top: 18px; }
-.panel.price-card { padding: 22px 24px 20px; border: 1.5px solid #5b57d9; text-align: left; }
-.price-card h2 { margin: 0 0 6px 12px; font-size: 22px; font-weight: 650; letter-spacing: -.02em; }
-.price-table { margin: 0; padding: 2px 12px; }
-.price-table div { display: grid; grid-template-columns: 1fr minmax(0, 260px); align-items: center; gap: 16px; padding: 10px 0; }
-.price-table div + div { border-top: 1px solid #dfe3f0; }
-.price-table dt { font-size: 19px; color: #2b3043; }
-.price-table dd { margin: 0; font-size: 19px; font-weight: 550; font-variant-numeric: tabular-nums; text-align: right; white-space: nowrap; }
-.price-table s { margin-right: 12px; color: var(--metadata); font-weight: 400; text-decoration-thickness: 1px; }
-.price-table .free { color: #5b2fe0; font-weight: 650; }
-.price-table .total dt, .price-table .total dd strong { font-weight: 700; color: var(--ink); }
-/* The trial line and its terms sit inside the price panel (E6). */
-.price-trial { margin-top: 12px; padding: 14px 18px; border-radius: 12px; background: rgba(226, 231, 252, .75); }
-.result-trial { color: #3b37a8; font-size: 20px; font-weight: 650; letter-spacing: -.01em; }
-.result-terms { margin-top: 4px; color: var(--muted); font-size: 15px; }
-.cmem-setup .existing-plan { display: flex; flex-direction: column; align-items: center; width: 100%; margin-top: 16px; padding: 10px 24px; border-radius: 18px; font-size: 17px; line-height: 1.4; }
-.existing-plan small { color: var(--metadata); font-size: 15px; }
-
-/* Checkout (PROTO #route-checkout-pro): "Due today" first and largest (E7). */
-.setup-main.step-checkout { width: min(1180px, calc(100% - 64px)); }
-.checkout-grid { display: grid; grid-template-columns: minmax(0, 1.5fr) minmax(0, 1fr); gap: 20px; align-items: start; }
-.checkout-receipt { padding: 14px 32px 20px; }
-.receipt { margin: 0; }
-.receipt div { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: baseline; gap: 14px; padding: 10px 0; border-bottom: 1px solid #dde1ee; }
-.receipt dt { font-size: 18px; }
-.receipt dd { margin: 0; font-size: 18px; font-weight: 600; font-variant-numeric: tabular-nums; text-align: right; }
-.receipt s { margin-right: 14px; color: var(--metadata); font-weight: 400; text-decoration-thickness: 1px; }
-.receipt .free { color: #4b1fe0; }
-.receipt .due { padding: 14px 0; }
-.receipt .due dt, .receipt .due dd { font-size: 26px; font-weight: 700; }
-.checkout-notes { margin-top: 14px; color: var(--muted); font-size: 16px; line-height: 1.5; }
-.checkout-notes p + p { margin-top: 6px; }
-.checkout-terms { margin-top: 12px; color: var(--muted); font-size: 16px; }
-.checkout-terms [data-slot="collapsible-fold-trigger"] { width: auto; }
-.checkout-terms ul { margin: 10px 0 0; padding-left: 22px; display: grid; gap: 6px; font-size: 15px; }
-.checkout-handoff { display: flex; flex-direction: column; align-items: flex-start; gap: 10px; padding: 24px 26px; text-align: left; }
-.checkout-art { width: 120px; height: auto; }
-.checkout-handoff h2 { font-size: 22px; font-weight: 650; letter-spacing: -.02em; }
-.checkout-handoff p { color: var(--muted); font-size: 17px; }
-.checkout-handoff .checkout-status { display: flex; align-items: center; gap: 10px; color: var(--ink); font-size: 17px; font-weight: 550; }
-.checkout-spinner { width: 20px; height: 20px; color: var(--violet); }
-.checkout-handoff .setup-error { margin: 6px 0 0; }
 
 /* Finish Setup (PROTO #route-finish-setup): connected tools apart from the ones that can be added (E8). */
 .setup-main.step-finish-setup { width: min(1180px, calc(100% - 64px)); }
 .finish-grid { display: grid; grid-template-columns: minmax(0, 1fr); gap: 22px; align-items: start; }
-.finish-grid.has-history { grid-template-columns: minmax(0, 1.4fr) minmax(0, 1fr); }
 .finish-tools { padding: 18px 18px 16px; }
 .finish-tools fieldset { border: 0; margin: 0; padding: 0; min-width: 0; }
 .finish-tools legend { margin: 0 0 6px; padding: 0; font-size: 21px; font-weight: 650; letter-spacing: -.015em; }
@@ -440,53 +368,20 @@
 .connection-title { display: flex; align-items: center; gap: 12px; }
 .connection-title .tool-mark { width: 30px; height: 30px; }
 .connection-title .tool-mark img { width: 26px; height: 26px; }
-/* The copy status and the guide link share the last line, so the status appearing moves nothing. */
+/* The guide link sits on its own last line. */
 .connection-body { display: grid; grid-template-columns: minmax(0, 1fr) auto; grid-auto-flow: row dense; column-gap: 16px; padding: 0 20px 12px; color: var(--muted); font-size: 16px; }
-.connection-body > :is(ol, .connection-copy) { grid-column: 1 / -1; }
-.connection-body > .connection-status { grid-column: 2; align-self: center; }
+.connection-body > ol { grid-column: 1 / -1; }
 .connection-body > .connection-guide { grid-column: 1; justify-self: start; }
 .connection-body ol { margin: 2px 0 10px; padding: 0; list-style: none; counter-reset: step; display: grid; gap: 4px; }
 .connection-body ol li { display: grid; grid-template-columns: 26px 1fr; gap: 14px; align-items: center; counter-increment: step; }
 .connection-body ol li::before { content: counter(step); display: grid; place-items: center; width: 26px; height: 26px; border-radius: 50%; background: #e9ecf8; color: var(--ink); font-size: 14px; }
 .connection-body code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 15px; color: var(--ink); overflow-wrap: anywhere; }
-.connection-copy { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 14px; align-items: center; margin-top: 8px; }
-.connection-copy code { display: block; padding: 8px 14px; border: 1px solid var(--line); border-radius: 10px; background: #f6f7fc; font-size: 16px; }
-.connection-copy .secondary { min-height: 44px; border-radius: 12px; font-size: 16px; }
 .connection-body .connection-commands { margin: 12px 0 12px; }
 .connection-body .connection-commands li::before { content: none; }
 .connection-body .connection-commands li { grid-template-columns: 1fr; gap: 0; }
-.connection-status { color: var(--muted); font-size: 14px; }
 /* The guide link is a 44px target (E8). */
 .connection-guide { display: inline-flex; align-items: center; gap: 6px; min-height: 44px; font-size: 16px; }
 .connection-guide svg { width: 16px; height: 16px; }
-.history-panel { padding: 24px 24px 22px; }
-.history-panel h2 { font-size: 21px; font-weight: 650; letter-spacing: -.015em; }
-.history-panel > p { margin-top: 8px; color: var(--muted); font-size: 16px; line-height: 1.5; }
-.history-count { margin-top: 16px; padding: 12px 18px; border: 1px solid #e0e4f2; border-radius: 12px; background: rgba(255, 255, 255, .6); font-size: 17px; font-weight: 550; }
-.history-permission { display: flex; align-items: flex-start; gap: 12px; min-height: 44px; margin-top: 18px; color: #2b3043; font-size: 16px; cursor: pointer; }
-.history-permission input { width: 22px; height: 22px; margin: 1px 0 0; flex: none; accent-color: var(--violet); }
-.history-actions { display: flex; flex-direction: column; align-items: stretch; gap: 6px; margin-top: 14px; }
-.history-actions .setup-hint { margin-top: 0; }
-.history-actions .text-action { align-self: flex-start; color: var(--violet); text-decoration-color: currentColor; }
-.history-done { margin-top: 16px; font-size: 17px; }
-/* What a run that skipped some memories says they were: the quieter second line of the receipt. */
-.history-done .history-done-rest { margin-top: 4px; color: var(--muted); font-size: 15px; line-height: 1.45; }
-/* A run found running after a reload: its line, and Stop beside it (under it on a phone). */
-.history-running { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 10px 16px; margin-top: 16px; }
-.history-running .history-done { margin-top: 0; }
-/* A run the person stopped (E9): a quiet status, not an error, at the hint size so Finish Setup's bottom row stays on
-   the first 1440×900 screen (the panel must not outgrow the tools column beside it). */
-.history-stopped { margin-top: 14px; color: var(--muted); font-size: 15px; line-height: 1.45; }
-.history-stopped p + p { margin-top: 4px; }
-.history-stopped-title { color: var(--ink); font-size: 16px; font-weight: 650; }
-
-/* Import (PROTO #route-import). */
-.setup-main.step-import { width: min(800px, calc(100% - 64px)); }
-.import-panel { padding: 28px 32px; }
-.import-status { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 4px 16px; }
-.import-status .scan-status { color: var(--ink); font-size: 18px; font-weight: 600; }
-.import-count { color: var(--muted); font-size: 17px; }
-.import-panel .setup-hint { margin-top: 14px; }
 
 /* Launch (PROTO #route-launch): the picked tools joined to the brain (E10). */
 .setup-main.step-launch { text-align: center; }
@@ -537,7 +432,6 @@
 /* Tablet. */
 @media (max-width: 1100px) {
   .reveal-sets { grid-template-columns: 1fr; max-width: 640px; margin-inline: auto; }
-  .checkout-grid, .finish-grid.has-history { grid-template-columns: 1fr; }
   .reveal-area-row { grid-template-columns: 64px minmax(0, 1fr) auto; }
   .reveal-chips { grid-column: 2 / -1; justify-content: flex-start; }
   .reveal-evidence-trigger { grid-column: 2 / -1; justify-self: start; }
@@ -565,11 +459,11 @@
   .step-bar li[data-state="current"] .step-mark { box-shadow: inset 0 0 0 3px #fff; }
   .step-bar .step-name { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; }
   .step-count { display: block; margin-top: 4px; color: var(--violet); font-size: 14px; font-weight: 600; line-height: 1.2; text-align: center; }
-  .setup-main, .setup-main.step-install, .setup-main.step-reveal, .setup-main.step-savings, .setup-main.step-checkout, .setup-main.step-finish-setup, .setup-main.step-import, .setup-main.step-workspace { width: calc(100% - 32px); margin: 20px auto 32px; }
+  .setup-main, .setup-main.step-install, .setup-main.step-reveal, .setup-main.step-finish-setup, .setup-main.step-workspace { width: calc(100% - 32px); margin: 20px auto 32px; }
   .page-heading { margin-bottom: 20px; }
   .cmem-setup .primary { min-height: 50px; padding: 10px 20px; font-size: 17px; }
   .cmem-setup .secondary { min-height: 48px; font-size: 16px; }
-  .setup-actions :is(.primary, .secondary), .history-actions .secondary, .history-running .secondary { width: 100%; }
+  .setup-actions :is(.primary, .secondary) { width: 100%; }
   /* Back keeps its own line at the top of the row; the forward buttons stack full width under it. */
   .setup-actions { flex-direction: column; align-items: stretch; gap: 10px; margin-top: 22px; }
   .setup-actions-forward { flex-direction: column; align-items: stretch; margin-left: 0; gap: 10px; }
@@ -607,26 +501,8 @@
   .reveal-evidence { margin: 0 12px; }
   .memory-cards { gap: 16px; max-width: 420px; }
   .memory-art { height: 190px; }
-  /* The tool names around the phone are 14px at the least (E5); the card's line names them again. */
-  .agent img { width: 28px; height: 28px; }
   .card-copy { padding: 4px 18px 18px; }
   .card-title { font-size: 23px; }
-  .card-price { font-size: 16px; }
-  .panel.price-card { padding: 16px 12px 14px; }
-  .price-card h2 { margin: 0 0 6px 8px; font-size: 18px; }
-  .price-table { padding: 2px 4px; }
-  .price-table div { grid-template-columns: 1fr auto; padding: 10px 4px; gap: 8px; }
-  .price-table dt, .price-table dd { font-size: 16px; }
-  .price-table s { margin-right: 6px; }
-  .result-trial { font-size: 17px; }
-  .result-terms { font-size: 14px; }
-  .checkout-receipt { padding: 8px 18px 18px; }
-  .receipt dt, .receipt dd { font-size: 16px; }
-  .receipt .due dt, .receipt .due dd { font-size: 21px; }
-  .receipt s { margin-right: 8px; }
-  .checkout-notes, .checkout-terms { font-size: 15px; }
-  .checkout-handoff h2 { font-size: 19px; }
-  .checkout-handoff p { font-size: 16px; }
   .finish-tools { padding: 16px 14px 14px; }
   .finish-tools legend { font-size: 19px; }
   .tool-option { grid-template-columns: 24px 32px 1fr; gap: 10px; font-size: 16px; }
@@ -634,11 +510,6 @@
   .tool-mark img { width: 26px; height: 26px; }
   .connection-body { padding: 0 14px 14px; font-size: 15px; }
   .connection-body ol li { grid-template-columns: 24px 1fr; gap: 10px; }
-  .connection-copy { grid-template-columns: 1fr; gap: 10px; }
-  .connection-copy code { font-size: 14px; }
-  .history-panel h2 { font-size: 19px; }
-  .history-panel > p, .history-permission { font-size: 15px; }
-  .history-count { font-size: 15px; padding: 12px 14px; }
   .workspace-field { flex-wrap: wrap; padding: 8px 10px; border-radius: 16px; }
   .workspace-field input { flex-basis: calc(100% - 40px); }
   .workspace-field .secondary { width: 100%; }

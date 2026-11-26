@@ -28,7 +28,6 @@ export const setupFr: Record<string, string> = {
   'Skip to content': 'Aller au contenu',
   'Setup progress': 'Progression de la configuration',
   'Memory': 'Mémoire',
-  'Checkout': 'Paiement',
   'Finish Setup': 'Terminer la configuration',
 
   // Common Actions
@@ -72,16 +71,8 @@ export const setupFr: Record<string, string> = {
   'Memory stays on this computer, written by your internal model gateway.': 'Votre mémoire reste sur cet ordinateur, rédigée par votre passerelle de modèles interne.',
   'A modern silver desktop computer displaying the CMEM brain mark': 'Un ordinateur de bureau argenté moderne affichant le logo CMEM en forme de cerveau',
 
-  // Persona names
-  'Cracked Dev': 'Développeur chevronné',
-  'Heavy AI User': 'Utilisateur intensif de l’IA',
-  'Medium AI User': 'Utilisateur régulier de l’IA',
-  'Light AI User': 'Utilisateur occasionnel de l’IA',
-
   // Step 6: Finish Setup
   'URL copied.': 'URL copiée.',
-  'Select and copy the URL above.': 'Sélectionnez et copiez l’URL ci-dessus.',
-  'Copy CMEM URL for {toolName}': 'Copier l’URL CMEM pour {toolName}',
   'Copy URL': 'Copier l’URL',
   'Copying…': 'Copie…',
   'Copied': 'Copié',
