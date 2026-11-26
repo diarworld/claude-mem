@@ -600,12 +600,16 @@ export function LiveIndicator() {
                   // merge-tick ACTIVITY, never called a merge.
                   const s3 = connection.s3
                   const count = s3.mergedPeers?.length
-                  const countWords = count === undefined ? null : `${count} ${count === 1 ? t('machine') : t('machines')}`
+                  // Zero is not a count worth printing: "0 machines" reads like a fault line, when the truth is
+                  // that no other device has joined the bucket yet. A discovery that ran and found nobody says
+                  // the same words as one that has not run yet.
+                  const countWords = count ? `${count} ${count === 1 ? t('machine') : t('machines')}` : null
                   return (
                     <StatusRow title={t('Memory sync')} tone={s3.tone}
                       mark={s3.tone === 'warning' ? <CloudAlertIcon className="size-4" /> : <CloudIcon className="size-4" />}>
                       {t(s3.label)}
                       {s3.state === 'stale' && s3.mergedPeers === null && <> · {t('no devices found yet')}</>}
+                      {s3.state !== 'error' && count === 0 && <> · {t('no devices found yet')}</>}
                       {s3.state !== 'error' && countWords && <> · {countWords}</>}
                       {/* In 'current' the time is when the latest merge happened; in 'stale' and 'error' it is
                           the merge tick's last activity (a skip, or the error) — never called a merge. */}
