@@ -24,7 +24,6 @@ import { parseTeamBrainTeamRef, type TeamBrainTeamRef } from '../../shared/teamb
 import type { DeliveredCmemMemoryCredentials } from '../cmem-memory-credentials.js';
 import { isInteractive, log } from './cli-io.js';
 import { mergeSettings } from './settings-io.js';
-import type { UsageSummary } from './usage-summary.js';
 
 // --- claude-mem OAuth pairing ----------------------------------------------
 // Every installer authenticates through the same GitHub/Google OAuth screen as
@@ -253,13 +252,12 @@ export function lastOAuthStartErrorMessage(): string | null {
 export type InstallState = 'fresh' | 'update';
 
 /**
- * What this install tells cmem.ai alongside the sign-in start request: whether
- * it ran over an existing install, and the numbers-only local usage summary
- * (see install/usage-summary.ts). Set once by the install command before any
- * pairing starts; both are optional on the wire and omitted when unknown.
+ * What this install tells cmem.ai alongside a pairing start request: whether
+ * it ran over an existing install. Set once by the install command; optional
+ * on the wire and omitted when unknown.
  */
-let signupContext: { installState?: InstallState; usageSummary?: UsageSummary | null } = {};
-export function setInstallerSignupContext(ctx: { installState?: InstallState; usageSummary?: UsageSummary | null }): void {
+let signupContext: { installState?: InstallState } = {};
+export function setInstallerSignupContext(ctx: { installState?: InstallState }): void {
   signupContext = { ...ctx };
 }
 
@@ -271,14 +269,13 @@ export function setInstallerSignupContext(ctx: { installState?: InstallState; us
 export function buildInstallerOAuthStartBody(
   source: string,
   deviceName: string,
-  ctx: { installState?: InstallState; usageSummary?: UsageSummary | null; setupFlowId?: string } = {},
+  ctx: { installState?: InstallState; setupFlowId?: string } = {},
   teamInvite?: string,
 ): Record<string, unknown> {
   return {
     source,
     device_name: deviceName,
     ...(ctx.installState ? { install_state: ctx.installState } : {}),
-    ...(ctx.usageSummary ? { usage_summary: ctx.usageSummary } : {}),
     ...(isSetupId(ctx.setupFlowId) ? { setup_flow_id: ctx.setupFlowId } : {}),
     ...(teamInvite ? { team_invite: teamInvite } : {}),
   };

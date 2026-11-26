@@ -90,7 +90,6 @@ mock.module('../../src/npx-cli/utils/paths.js', () => ({
 }));
 const prompts = { ...await import('@clack/prompts') };
 const banner = { ...await import('../../src/npx-cli/banner.js') };
-const usage = { ...await import('../../src/npx-cli/install/usage-summary.js') };
 const spawnGate = { ...await import('../../src/shared/worker-spawn-gate.js') };
 const runtime = { ...await import('../../src/npx-cli/install/setup-runtime.js') };
 const npmInstall = { ...await import('../../src/npx-cli/install/npm-install-helper.js') };
@@ -111,7 +110,6 @@ mock.module('@clack/prompts', () => ({
   tasks: async () => { taskBoundaryCalls++; throw new Error('Unexpected interactive tasks'); },
 }));
 mock.module('../../src/npx-cli/banner.js', () => ({ ...banner, playBanner: async () => {} }));
-mock.module('../../src/npx-cli/install/usage-summary.js', () => ({ ...usage, readUsageSummary: async () => null }));
 mock.module('../../src/shared/worker-spawn-gate.js', () => ({
   ...spawnGate,
   holdSpawnLock: async () => {
@@ -193,7 +191,6 @@ afterAll(() => {
   stderr.mockRestore(); stdout.mockRestore();
   mock.module('@clack/prompts', () => prompts);
   mock.module('../../src/npx-cli/banner.js', () => banner);
-  mock.module('../../src/npx-cli/install/usage-summary.js', () => usage);
   mock.module('../../src/shared/worker-spawn-gate.js', () => spawnGate);
   mock.module('../../src/npx-cli/install/setup-runtime.js', () => runtime);
   mock.module('../../src/npx-cli/utils/paths.js', () => installPaths);

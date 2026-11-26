@@ -70,7 +70,6 @@ const baseSettings = { CLAUDE_MEM_WORKER_PORT: String(port), CLAUDE_MEM_WORKER_A
 
 const prompts = { ...await import('@clack/prompts') };
 const banner = { ...await import('../../src/npx-cli/banner.js') };
-const usage = { ...await import('../../src/npx-cli/install/usage-summary.js') };
 const spawnGate = { ...await import('../../src/shared/worker-spawn-gate.js') };
 const spawner = { ...await import('../../src/services/worker-spawner.js') };
 const cliPaths = { ...await import('../../src/npx-cli/utils/paths.js') };
@@ -138,7 +137,6 @@ mock.module('../../src/npx-cli/cmem-memory-credentials.js', () => ({
   ...memoryCredentials,
   buildHostObserverSettings: () => ({ CLAUDE_MEM_PROVIDER: 'openrouter' }),
 }));
-mock.module('../../src/npx-cli/install/usage-summary.js', () => ({ ...usage, readUsageSummary: async () => null }));
 mock.module('../../src/shared/worker-spawn-gate.js', () => ({ ...spawnGate, holdSpawnLock: async () => () => {} }));
 
 // The fixture worker: the real WorkViewRoutes setup endpoints on the configured port.

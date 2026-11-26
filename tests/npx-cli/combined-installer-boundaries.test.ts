@@ -81,7 +81,6 @@ const commandEnvironment = spyOn(childProcess, 'execFileSync').mockImplementatio
 
 const prompts = await import('@clack/prompts');
 const banner = await import('../../src/npx-cli/banner.js');
-const usage = await import('../../src/npx-cli/install/usage-summary.js');
 const spawnGate = await import('../../src/shared/worker-spawn-gate.js');
 const cliPaths = await import('../../src/npx-cli/utils/paths.js');
 // This suite imports source modules; package-path resolution belongs to the built CLI.
@@ -118,7 +117,6 @@ mock.module('@clack/prompts', () => ({
   log: Object.fromEntries(['info', 'success', 'warn', 'error', 'message'].map(key => [key, (value: string) => lines.push(value)])),
 }));
 mock.module('../../src/npx-cli/banner.js', () => ({ ...banner, playBanner: async () => {} }));
-mock.module('../../src/npx-cli/install/usage-summary.js', () => ({ ...usage, readUsageSummary: async () => null }));
 mock.module('../../src/shared/worker-spawn-gate.js', () => ({ ...spawnGate, holdSpawnLock: async () => () => {} }));
 mock.module('../../src/services/hooks/server-bootstrap.js', () => ({
   bootstrapServerApiKey: async () => {
@@ -183,7 +181,6 @@ afterAll(() => {
   loadSettings.mockRestore(); exit.mockRestore(); http.mockRestore();
   mock.module('@clack/prompts', () => prompts);
   mock.module('../../src/npx-cli/banner.js', () => banner);
-  mock.module('../../src/npx-cli/install/usage-summary.js', () => usage);
   mock.module('../../src/shared/worker-spawn-gate.js', () => spawnGate);
   mock.module('os', () => realOs);
   mock.module('node:os', () => realOs);

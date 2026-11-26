@@ -9,8 +9,7 @@ import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js
 import { settingsTarget, type SettingsDocument } from '../../shared/settings-document.js';
 
 // Every request here goes to the local worker on loopback, and these routes answer from a small local JSON file
-// (WorkViewRoutes setup-state handlers), so 5 s only trips on a stalled connection, never on a slow answer. Same
-// budget as READ_TIMEOUT_MS in usage-summary.ts for the installer's other loopback reads.
+// (WorkViewRoutes setup-state handlers), so 5 s only trips on a stalled connection, never on a slow answer.
 const WORKER_REQUEST_TIMEOUT_MS = 5_000;
 
 /** On The Go checkout on the existing pairing path (funnel Phase 8). */

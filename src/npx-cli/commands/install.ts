@@ -12,7 +12,7 @@ import { readProjectAttribution, replaceOwnedFiles } from '../../shared/owned-fi
 import { homedir } from 'os';
 import { dirname, join } from 'path';
 import { SettingsDefaultsManager, type SettingsDefaults } from '../../shared/SettingsDefaultsManager.js';
-import { resolveDbPath, USER_SETTINGS_PATH } from '../../shared/paths.js';
+import { USER_SETTINGS_PATH } from '../../shared/paths.js';
 import { loadClaudeMemEnv, saveClaudeMemEnv } from '../../shared/EnvManager.js';
 import { ensureWorkerStarted, getLastWorkerBootFailure, type WorkerStartResult } from '../../services/worker-spawner.js';
 import { formatHostForUrl } from '../../shared/worker-utils.js';
@@ -27,7 +27,6 @@ import {
   isInstallCurrent,
   getBunPath,
 } from '../install/setup-runtime.js';
-import { formatUsageSummaryLines, readUsageSummary } from '../install/usage-summary.js';
 import { playBanner } from '../banner.js';
 import { normalizeRuntimeFlag } from './server-runtime-setup.js';
 import { ErrorSeverity } from '../install/error-taxonomy.js';
@@ -2227,13 +2226,7 @@ async function runInstallCommandInner(options: InstallOptions, summary: InstallS
   }
   log.info(segments.join(` ${dot} `));
 
-  // Numbers-only local usage summary for the sign-in start request (and the
-  // block below). Read before the worker is restarted; any failure omits it.
-  const usageSummary = await readUsageSummary({ dbPath: resolveDbPath(), bunPath: getBunPath() })
-    .catch(() => null);
-  setInstallerSignupContext({ installState: alreadyInstalled ? 'update' : 'fresh', usageSummary });
-  const usageLines = formatUsageSummaryLines(usageSummary);
-  if (usageLines.length > 0) log.info(usageLines.join('\n'));
+  setInstallerSignupContext({ installState: alreadyInstalled ? 'update' : 'fresh' });
 
   // Runtime hooks run the on-PATH claude-mem launcher in exec form, with no
   // shell. Only the Setup hook (version-check.js) still declares
