@@ -1213,6 +1213,7 @@ export class WorkerService implements WorkerRef {
         processRegistry: getSupervisor().getRegistry(),
       });
       this.workViewRoutes = new WorkViewRoutes({
+        ensureS3SyncManager: () => this.dbManager.ensureS3SyncManager(),
         ...(settings.CLAUDE_MEM_WORK_VIEW_SHARED_STATE === 'true' ? {
           persistSharedCopy: (requestId: string, entry: { fingerprint: string; copy: unknown; generatedAt: number }) => this.sharedWorkSync!.persistCopy(requestId, entry),
           saveSharedLedgerFile: (name: string, value: unknown) => this.sharedWorkSync!.saveFile(name, value),

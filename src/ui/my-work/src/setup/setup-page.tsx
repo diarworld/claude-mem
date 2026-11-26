@@ -4,7 +4,7 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { CmemMark } from '@/components/brand'
 import { LOCALES, LOCALE_NAMES, useI18n, type Locale } from '@/lib/i18n'
-import { EMPTY_SETUP_DATA, connectionFailureAbove, localSetupSource, setupToolsForInstall, toSetupFailure, type SetupChoice, type SetupData, type SetupFailure, type SetupSource } from './setup-data'
+import { EMPTY_SETUP_DATA, connectionFailureAbove, localSetupSource, setupToolsForInstall, toSetupFailure, type SetupChoice, type SetupData, type SetupFailure, type SetupIntegrationsSave, type SetupSource } from './setup-data'
 import { backWaitsFor, choiceLocked, guardStep, hydrateSetupChoice, initialFlowState, previousStep, scanMovesOn, type SetupFlowState, type SetupStep } from './setup-flow'
 import type { SampleFailure, SampleScanStop } from './setup-sample'
 import { ChoiceScreen } from './screens/choice-screen'
@@ -33,7 +33,7 @@ function useSetupSource(): SetupSource | null {
     // `&fail=` and `&installer=on`: setup-sample.ts's header says what each plays.
     const scan = PARAMS.get('scan')
     const scanStop = (['failed'] as const).find((stop): stop is SampleScanStop => stop === scan)
-    const fail = (['install', 'installer', 'choice'] as const).find((kind): kind is SampleFailure => kind === PARAMS.get('fail'))
+    const fail = (['install', 'installer', 'choice', 'integrations'] as const).find((kind): kind is SampleFailure => kind === PARAMS.get('fail'))
     const installer = PARAMS.get('installer') === 'on'
     import('./setup-sample').then(({ createSampleSetupSource }) => { if (current) setSource(createSampleSetupSource(PARAMS.get('sample') === 'new', scan !== null && !scanStop ? Number(scan) : null, PARAMS.get('agent') === 'none', { scanStop, fail, installer })) })
     return () => { current = false }
@@ -215,13 +215,22 @@ export default function SetupPage({ onComplete }: { onComplete: () => void }) {
     if (step !== 'workspace') main.current?.querySelector<HTMLElement>('h1')?.focus({ preventScroll: true })
   }, [step])
 
-  const submitChoice = async (branch: SetupChoice['branch']): Promise<void> => {
+  const submitChoice = async (branch: SetupChoice['branch'], integrations: SetupIntegrationsSave | null = null): Promise<void> => {
     if (!source || choicePending.current) return
     choicePending.current = true
     choiceEdited.current = true
     setSavingChoice(true)
     telemetry.action('choose_memory', { branch, branch_confirmed: false })
     try {
+      // The choice screen's integrations blocks ride the same Continue: their save goes first, and a refusal
+      // (an S3 Sync enabled without its bucket credentials, for one) keeps the screen and says why.
+      if (integrations) {
+        const saved = await handOff(
+          async () => { await source.saveIntegrations(integrations) },
+          'integrations_failed', 'Couldn’t save the integration settings.', () => submitChoice(branch, integrations))
+        if (!saved) return
+        telemetry.action('integrations_saved')
+      }
       const success = await handOff(() => source.choose({ branch, memoryBilling: 'existing' }), 'choice_failed', 'Couldn’t save your storage choice.', () => submitChoice(branch))
       if (!success) return
       const committed = { branch, branch_confirmed: true }
@@ -251,7 +260,7 @@ export default function SetupPage({ onComplete }: { onComplete: () => void }) {
   useEffect(() => {
     if (step !== 'choice' || !keptExistingChoice || choiceApplied || choicePending.current || keptExistingSent.current) return
     keptExistingSent.current = true
-    void submitChoice('home')
+    void submitChoice('home', null)
   })
 
   // The interstitial has no forward control of its own, and the once-guard above must not re-POST: when the
@@ -310,7 +319,7 @@ export default function SetupPage({ onComplete }: { onComplete: () => void }) {
         <PageHeading id="keep-existing-title" title={t('Keeping your existing configuration.')}
           lead={t('Memory stays on this computer, written by your internal model gateway.')} />
       </section>
-    ) : <ChoiceScreen branch={flow.branch} saving={savingChoice} back={back} onChoose={(branch) => void submitChoice(branch)} />,
+    ) : <ChoiceScreen branch={flow.branch} integrations={data.integrations} saving={savingChoice} back={back} onChoose={(branch, integrations) => void submitChoice(branch, integrations)} />,
     'finish-setup': () => (
       <FinishSetupScreen tools={tools} selected={flow.finishTools} onSelect={(finishTools) => update({ finishTools })}
         back={back}

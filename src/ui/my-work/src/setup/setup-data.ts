@@ -84,6 +84,30 @@ export function toSetupFailure(error: unknown): SetupFailure {
 
 export type { MemoryResult } from './setup-search'
 
+/**
+ * The choice screen's integrations blocks' prefill. Mirrors
+ * SetupStateView['integrations'] (shared/setup-state.ts) field-for-field, as a
+ * local interface: the my-work package typechecks without node types, so it
+ * cannot import even a type from that worker file (its own imports would be
+ * pulled into the check).
+ */
+export interface SetupIntegrationsView {
+  /** The stored gateway key masked, '' when none — the form shows "already saved" instead of the secret. */
+  openRouterKeyMasked: string
+  /** The effective gateway endpoint: settings.json's value, '' when unset (the installed default applies). */
+  openRouterBaseUrl: string
+  s3: { enabled: boolean; endpoint: string; bucket: string; region: string }
+}
+
+/** What the integrations save sends (POST /api/setup/integrations). Absent fields mean "leave as they are". */
+export interface SetupIntegrationsSave {
+  /** The GPUStack (OpenRouter-shaped) gateway key; sent only when typed. */
+  gpuStackApiKey?: string
+  /** The gateway endpoint the key will be sent to; sent when edited. */
+  gpuStackEndpoint?: string
+  s3Sync?: { enabled: boolean; endpoint?: string; bucket?: string; region?: string; accessKeyId?: string; secretAccessKey?: string }
+}
+
 export interface SetupData {
   connectionError: string | null
   /** Whether the connection error got no answer at all or a refusal; null with no error. */
@@ -99,6 +123,8 @@ export interface SetupData {
   /** `null` until an installer reports. */
   installer: SetupInstallerView | null
   alreadyPro: boolean
+  /** The integrations blocks' prefill; null until the first state response or from an older worker. */
+  integrations: SetupIntegrationsView | null
   /** Finish Setup tool ids found on this machine; they come pre-ticked. */
   detectedTools: string[]
   /** "What's next?" chips, from the person's own goals and open asks. */
@@ -123,6 +149,8 @@ export interface SetupSource {
   confirmUpload(upload: boolean, agents?: string[], improveProduct?: boolean): Promise<void>
   /** Hands the storage choice to the installer waiting in the terminal (POST /api/setup/choice). */
   choose(choice: SetupChoice): Promise<void>
+  /** Saves the choice screen's integrations blocks (the gateway key and the S3 Sync enable; POST /api/setup/integrations). */
+  saveIntegrations(request: SetupIntegrationsSave): Promise<SetupIntegrationsView>
   /** Finishes setup for this machine with the tools picked on Finish Setup; the terminal exits (POST /api/setup/complete). */
   complete(tools: string[], telemetry?: SetupEvent[]): Promise<void>
   search(query: string): Promise<MemoryResult[]>
@@ -143,6 +171,7 @@ export const EMPTY_SETUP_DATA: SetupData = {
   recentPrompts: [],
   installer: null,
   alreadyPro: false,
+  integrations: null,
   detectedTools: [],
   suggestions: [],
 }
@@ -174,6 +203,8 @@ interface WorkerSetupState {
   install?: SetupInstallState | null
   status: SetupStatus; alreadyPro: boolean
   installer?: SetupInstallerView | null
+  /** An older worker sends no integrations prefill. */
+  integrations?: SetupIntegrationsView
 }
 
 async function workerJson<T>(url: string, init?: RequestInit): Promise<T> {
@@ -249,6 +280,7 @@ export const localSetupSource: SetupSource = {
       choice: state.choice ?? null,
       install: state.install ?? null,
       alreadyPro: state.alreadyPro,
+      integrations: state.integrations ?? null,
       installer: state.installer ? { stage: state.installer.stage, error: state.installer.error } : null,
       })
       void ensureScanStarted()
@@ -366,6 +398,7 @@ export const localSetupSource: SetupSource = {
   },
   async confirmUpload(upload, agents, improveProduct) { await postJson('/api/setup/scan/consent', { upload, ...(agents ? { agents } : {}), ...(improveProduct === undefined ? {} : { improveProduct }) }) },
   async choose(choice) { await postJson('/api/setup/choice', choice) },
+  async saveIntegrations(request) { return postJson<SetupIntegrationsView>('/api/setup/integrations', request) },
   async complete(tools, telemetry) { await postJson('/api/setup/complete', { tools, ...(telemetry?.length ? { telemetry } : {}) }) },
   async search(query) { return toMemoryResults(await workerJson<WorkerSearchResult>(searchUrl(query))) },
   async keepNote(record, text) {

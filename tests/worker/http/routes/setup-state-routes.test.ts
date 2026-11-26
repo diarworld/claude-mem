@@ -269,7 +269,12 @@ describe('setup state endpoints', () => {
 
   it('start pending on a machine that never finished setup, with nothing pre-selected', async () => {
     await start();
-    expect(await state()).toEqual({ status: 'pending', choice: null, installer: null, tools: null, completedAt: null, alreadyPro: false, history: { projects: 0, sessions: 0, observations: 0 }, historyImport: null, backgroundWorkRunning: [] });
+    expect(await state()).toEqual({
+      status: 'pending', choice: null, installer: null, tools: null, completedAt: null, alreadyPro: false,
+      history: { projects: 0, sessions: 0, observations: 0 }, historyImport: null, backgroundWorkRunning: [],
+      // The integrations blocks' prefill: nothing stored, the shipped S3 defaults.
+      integrations: { openRouterKeyMasked: '', openRouterBaseUrl: '', s3: { enabled: false, endpoint: 'https://storage.yandexcloud.net', bucket: '', region: 'ru-central1' } },
+    });
     expect(existsSync(statePath)).toBe(false);
   });
 

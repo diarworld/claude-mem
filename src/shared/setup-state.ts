@@ -43,6 +43,15 @@ export interface SetupStateView extends SetupStateFile {
   /** Long work this worker is doing now that a restart would kill: the extraction run (the automatic refresh) and the
    * history import. The installer waits for it to finish before any restart. */
   backgroundWorkRunning?: Array<'extraction' | 'history-import'>;
+  /** The choice screen's integrations blocks' prefill: the stored gateway key (masked), the gateway endpoint and the
+   * S3 Sync settings. Absent when the worker serves no integrations step (older installer protocol versions). */
+  integrations?: {
+    /** The stored gateway key masked, '' when none — the form shows "already saved" instead of the secret. */
+    openRouterKeyMasked: string;
+    /** The effective gateway endpoint: settings.json's value, '' when unset (the installer default applies). */
+    openRouterBaseUrl: string;
+    s3: { enabled: boolean; endpoint: string; bucket: string; region: string };
+  };
 }
 
 export const INITIAL_SETUP_STATE: SetupStateFile = { status: 'pending', choice: null, installer: null, tools: null, completedAt: null };

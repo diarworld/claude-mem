@@ -6,7 +6,7 @@
 // `&fail=install|installer|choice` makes that hand-off fail once, so its error can be seen; the retry works.
 // `choice` is the worker refusing the storage choice; the others are reports from the installer.
 // `&installer=on` plays the installer applying the storage choice, as the terminal does, so the choice locks after it.
-import { SetupRequestError, type MemoryResult, type SetupData, type SetupSource } from './setup-data'
+import { SetupRequestError, type MemoryResult, type SetupData, type SetupIntegrationsView, type SetupSource } from './setup-data'
 import type { InstallerStage } from './setup-flow'
 import { SAMPLE_REQUESTS } from '../data'
 import { SAMPLE_FOCUS_AREAS } from '../data-goals'
@@ -52,13 +52,14 @@ const RECORDS: MemoryResult[] = [
 /** Where `&scan=` stops the sample scan instead of finishing it. The upload offer is gone: the scan only stops on a failure. */
 export type SampleScanStop = 'failed'
 /** Which hand-off `&fail=` makes fail once. */
-export type SampleFailure = 'install' | 'installer' | 'choice'
+export type SampleFailure = 'install' | 'installer' | 'choice' | 'integrations'
 /** Invented failure words for the sample, shaped like the worker's own. */
 const SAMPLE_FAILURE_WORDS: Record<SampleFailure | 'scan', string> = {
   scan: 'Hosted setup failed (HTTP 503): The anonymous daily budget has been reached.',
   install: 'Cursor configuration could not be saved.',
   installer: 'The setup program stopped (exit 1). Retry setup in this page, or run npx claude-mem install --setup browser.',
   choice: 'The installer is not waiting for a storage choice yet.',
+  integrations: 'The worker refused the integration settings: the bucket access key and secret key are required.',
 }
 
 /** What the sample installer reports once it has applied a storage choice (the stages the real one reports). */
@@ -103,6 +104,7 @@ function sampleData(newInstall: boolean, waitingForAgent: boolean, fail: SampleF
     recentPrompts: RECENT_PROMPTS,
     installer: fail === 'installer' ? { stage: 'failed', error: SAMPLE_FAILURE_WORDS.installer } : installer ? { stage: 'waiting-for-choice', error: null } : null,
     alreadyPro: false,
+    integrations: SAMPLE_INTEGRATIONS,
     detectedTools: ['claude-code', 'codex', 'chatgpt'],
     suggestions: GOALS!.map((goal) => goal.title),
   }
@@ -113,6 +115,13 @@ function sampleData(newInstall: boolean, waitingForAgent: boolean, fail: SampleF
  * two of its three tools (Gemini's detectAt is 0.46).
  */
 const SAMPLE_FAIL_AT_PERCENT = 40
+
+/** The choice screen's integrations blocks as the review fixture plays them: a key already saved, sync off. */
+const SAMPLE_INTEGRATIONS: SetupIntegrationsView = {
+  openRouterKeyMasked: '****9f2c',
+  openRouterBaseUrl: 'https://gpustack.data.lmru.tech/v1',
+  s3: { enabled: false, endpoint: '', bucket: '', region: '' },
+}
 
 /** Plays the scan, then lands Goals, Work and Rules one after another, as the live screen will. */
 export function createSampleSetupSource(newInstall: boolean, holdScanAtPercent: number | null, waitingForAgent = false,
@@ -189,6 +198,22 @@ export function createSampleSetupSource(newInstall: boolean, holdScanAtPercent: 
     async choose(choice) {
       if (failsOnce('choice')) throw new SetupRequestError('refused', SAMPLE_FAILURE_WORDS.choice)
       publish({ choice, ...(installer ? { installer: { stage: appliedStage(), error: null } } : {}) })
+    },
+    // The fixture applies the save to its own copy, so the blocks' saved state (masked key, toggled sync) is visible.
+    async saveIntegrations(request) {
+      if (failsOnce('integrations')) throw new SetupRequestError('refused', SAMPLE_FAILURE_WORDS.choice)
+      const view: SetupIntegrationsView = {
+        openRouterKeyMasked: request.gpuStackApiKey ? `${'*'.repeat(Math.max(4, request.gpuStackApiKey.length - 4))}${request.gpuStackApiKey.slice(-4)}` : data.integrations?.openRouterKeyMasked ?? '',
+        openRouterBaseUrl: request.gpuStackEndpoint ?? data.integrations?.openRouterBaseUrl ?? '',
+        s3: {
+          enabled: request.s3Sync?.enabled ?? data.integrations?.s3.enabled ?? false,
+          endpoint: request.s3Sync?.endpoint ?? data.integrations?.s3.endpoint ?? '',
+          bucket: request.s3Sync?.bucket ?? data.integrations?.s3.bucket ?? '',
+          region: request.s3Sync?.region ?? data.integrations?.s3.region ?? '',
+        },
+      }
+      publish({ integrations: view })
+      return view
     },
     async complete() {},
     async keepNote() { return 0 },

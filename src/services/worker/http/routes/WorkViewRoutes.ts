@@ -13,6 +13,8 @@ import { logger } from '../../../../utils/logger.js';
 import { hasForwardedClientHeaders, hasLoopbackHostHeader, isLocalhost } from '../../../../server/middleware/request-auth-helpers.js';
 import { WorkStateSource, type WorkViewSnapshot } from '../../../work-view/data-source.mjs';
 import { WorkViewReadWorkerClient } from '../../../work-view/WorkViewReadWorkerClient.js';
+import { applySetupIntegrations, readSetupIntegrationsView, validateSetupIntegrations } from '../../../work-view/setup-integrations.js';
+import { loadClaudeMemEnv } from '../../../../shared/EnvManager.js';
 import { boundedDurationMs, type WorkViewReadPurpose } from '../../../work-view/WorkViewReadProtocol.js';
 import type { ViewerSyncStatus } from '../../../../shared/viewer-sync-status.js';
 import { workViewOverview, workViewRequestDetail } from '../../../work-view/overview.js';
@@ -306,6 +308,12 @@ interface WorkViewOptions {
    * conversation routes answer 503. Its onChange should be publishConversationContinuation, as the worker's is.
    */
   conversationContinuationRunner?: ConversationContinuationRunner;
+  /**
+   * The S3 Sync manager for the settings now on disk, called after the setup
+   * page's integrations save so an enable takes effect without a worker
+   * restart. Without it the save still lands, and sync waits for the next boot.
+   */
+  ensureS3SyncManager?: () => { status(): unknown } | null;
 }
 
 /** One overall request on the Reveal, read from the request-group ledger so new installs (prompts only) have work too. */
@@ -376,6 +384,21 @@ const setupCompleteBody = z.object({
   telemetry: z.unknown().optional(),
 }).strict();
 const setupImportBody = z.object({}).strict();
+// The choice screen's integrations blocks (the GPUStack key and the S3 Sync
+// enable). Every field is optional: absent means "leave as it is", so an
+// already-configured machine resubmitting the choice cannot blank anything.
+const setupIntegrationsBody = z.object({
+  gpuStackApiKey: z.string().trim().min(1).max(400).optional(),
+  gpuStackEndpoint: z.string().trim().url().max(300).optional(),
+  s3Sync: z.object({
+    enabled: z.boolean(),
+    endpoint: z.string().trim().max(300).optional(),
+    bucket: z.string().trim().max(200).optional(),
+    region: z.string().trim().max(100).optional(),
+    accessKeyId: z.string().trim().max(200).optional(),
+    secretAccessKey: z.string().trim().max(400).optional(),
+  }).strict().optional(),
+}).strict();
 
 type HumanCopyProvider = ReturnType<typeof chatCompletionsHumanCopyProvider> & {
   configKey?: string;
@@ -532,6 +555,8 @@ export class WorkViewRoutes extends BaseRouteHandler {
   private rulesFilePath: string;
   private claudeInstructionsPath: string;
   private setupScan: SetupScan | null;
+  /** Starts (or re-points) S3 Sync after the setup page's integrations save; null in tests that skip the wiring. */
+  private readonly ensureS3SyncManager: (() => { status(): unknown } | null) | null;
   private setupStatePath: string;
   private setupReadExhausted = false;
   private setupTelemetry: ReturnType<typeof createSetupTelemetry> | null = null;
@@ -587,6 +612,7 @@ export class WorkViewRoutes extends BaseRouteHandler {
     this.rulesFilePath = options.rulesFilePath ?? join(DATA_DIR, 'MY-RULES.md');
     this.claudeInstructionsPath = options.claudeInstructionsPath ?? join(CLAUDE_CONFIG_DIR, 'CLAUDE.md');
     this.setupScan = options.setupScan ?? null;
+    this.ensureS3SyncManager = options.ensureS3SyncManager ?? null;
     this.setupStatePath = options.setupStatePath ?? setupStatePath();
     this.resumeSetup = options.resumeSetup ?? createSetupInstallerResumer(this.setupStatePath, {
       onStateChange: () => this.broadcast('setup-state', this.setupStateView()),
@@ -926,6 +952,10 @@ export class WorkViewRoutes extends BaseRouteHandler {
       res.json(this.setupStateView());
     }));
     app.post('/api/setup/choice', workViewLoopbackOnly, requireWorkViewOrigin, validateBody(setupChoiceBody), this.wrapHandler(this.saveSetupChoice));
+    // The choice screen's integrations blocks. Not gated on the funnel's install guards: these settings belong to
+    // the person, not to a wizard stage — an interrupted install must still be able to save a gateway key, and the
+    // request is already loopback-only with a checked Origin and a strict body.
+    app.post('/api/setup/integrations', workViewLoopbackOnly, requireWorkViewOrigin, validateBody(setupIntegrationsBody), this.wrapHandler(this.saveSetupIntegrations));
     app.post('/api/setup/install', workViewLoopbackOnly, requireWorkViewOrigin, validateBody(setupInstallSelectionBody), this.wrapHandler(this.configureSetupInstall));
     app.post('/api/setup/install/installer', workViewLoopbackOnly, requireWorkViewOrigin, validateBody(setupInstallReportBody), this.wrapHandler(this.reportSetupInstall));
     app.post('/api/setup/resume', workViewLoopbackOnly, requireWorkViewOrigin, validateBody(setupResumeBody), this.wrapHandler(async (req, res) => {
@@ -946,7 +976,7 @@ export class WorkViewRoutes extends BaseRouteHandler {
   private setupStateView(state: SetupStateFile = readSetupState(this.setupStatePath)): SetupStateView {
     const settings = SettingsDefaultsManager.loadFromFile(this.settingsPath, true, { readOnly: true }) as unknown as Record<string, unknown>;
     const historyImport = this.historyImport?.state() ?? null;
-    return { ...state, install: redactSetupInstall(state.install), alreadyPro: hasExistingConfiguration(settings), history: this.historyCounts(), historyImport, backgroundWorkRunning: this.backgroundWorkRunning({ countScanWaitingForUploadAnswer: true, failOnUnreadableRefresh: false }) };
+    return { ...state, install: redactSetupInstall(state.install), alreadyPro: hasExistingConfiguration(settings), history: this.historyCounts(), historyImport, backgroundWorkRunning: this.backgroundWorkRunning({ countScanWaitingForUploadAnswer: true, failOnUnreadableRefresh: false }), integrations: readSetupIntegrationsView(this.settingsPath) };
   }
 
   /**
@@ -1108,6 +1138,30 @@ export class WorkViewRoutes extends BaseRouteHandler {
     const now = new Date().toISOString();
     const choice = applied ? state.choice : { branch, memoryBilling, chosenAt: now };
     this.saveSetupState({ ...state, choice }, res);
+  };
+
+  // The choice screen's integrations save (the GPUStack gateway key and the S3
+  // Sync block). Validation, the settings write and the .env write live in
+  // work-view/setup-integrations.ts; this handler only wires them to HTTP and
+  // starts the S3 manager the save may have enabled. The answer is the view
+  // the form will prefill with next time (the key masked), so the page can
+  // confirm the save without another GET round-trip.
+  private saveSetupIntegrations = (req: Request, res: Response): void => {
+    const request = req.body as z.infer<typeof setupIntegrationsBody>;
+    const refusal = validateSetupIntegrations(request, loadClaudeMemEnv());
+    if (refusal) { res.status(400).json({ error: refusal }); return; }
+    try {
+      const outcome = applySetupIntegrations(request, { settingsPath: this.settingsPath });
+      // An enable takes effect now: the S3 manager is built once per boot, so
+      // the saved settings would otherwise wait for the next worker restart.
+      this.ensureS3SyncManager?.();
+      logger.info('WORKER', `Setup saved the integrations settings: ${outcome.settingsWritten.sort().join(', ') || 'no settings keys'}${outcome.s3CredentialsSaved ? '; bucket credentials' : ''}.`);
+      res.setHeader('Cache-Control', 'no-store');
+      res.json(readSetupIntegrationsView(this.settingsPath));
+    } catch (error) {
+      logger.error('WORKER', 'The setup integrations save failed', {}, error instanceof Error ? error : new Error(String(error)));
+      res.status(500).json({ error: 'The settings file could not be updated. See the worker log for details.' });
+    }
   };
 
   private saveInstallerStage = (req: Request, res: Response): void => {

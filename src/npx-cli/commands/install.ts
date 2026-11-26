@@ -158,6 +158,7 @@ import { canonicalIntegrationId } from '../../shared/integration-id.js';
 import { checkWindowsGitBash } from '../utils/windows-git-bash-preflight.js';
 import { claudeCodeVersionTooOldWarning, detectClaudeCodeVersion } from '../install/claude-code-version.js';
 import { ensureLauncherOnPath, ensureLocalBinOnShellPath } from '../../launcher/install-launcher.js';
+import { gpustackDefaultUpdates } from '../../shared/gpustack-defaults.js';
 
 /**
  * Records the thedotmack marketplace in Claude Code's known_marketplaces.json
@@ -1555,20 +1556,14 @@ async function promptTelemetryOptIn(): Promise<void> {
 
 /**
  * GPUStack fresh-install defaults: the internal model gateway a fresh install
- * runs memory on. Written only into keys still empty or still holding the
- * shipped default — a value this machine chose, an exported environment value
- * and the gateway key are never touched: the key is never hardcoded, only
- * asked for or read (CLAUDE_MEM_OPENROUTER_API_KEY).
+ * runs memory on. The constants and the fill rule live in
+ * shared/gpustack-defaults.ts — the setup page's integrations step writes the
+ * same keys the same way, so there is one definition (gpustack-defaults.ts).
+ * Written only into keys still empty or still holding the shipped default — a
+ * value this machine chose, an exported environment value and the gateway key
+ * are never touched: the key is never hardcoded, only asked for or read
+ * (CLAUDE_MEM_OPENROUTER_API_KEY).
  */
-const GPUSTACK_DEFAULT_BASE_URL = 'https://gpustack.data.lmru.tech/v1';
-const GPUSTACK_DEFAULT_MODEL = 'glm-5.3-flash';
-
-/** The provider keys the GPUStack defaults fill, with their values. */
-const GPUSTACK_DEFAULTS: Record<string, string> = {
-  CLAUDE_MEM_PROVIDER: 'openrouter',
-  CLAUDE_MEM_OPENROUTER_BASE_URL: GPUSTACK_DEFAULT_BASE_URL,
-  CLAUDE_MEM_OPENROUTER_MODEL: GPUSTACK_DEFAULT_MODEL,
-};
 
 /**
  * Whether this run installs onto a machine that has never settled a provider:
@@ -1603,19 +1598,8 @@ let freshProviderInstall: boolean | null = null;
  */
 function applyGpustackDefaults(persisted: Record<string, unknown>, freshInstall: boolean): void {
   if (!freshInstall) return;
-  const shipped = SettingsDefaultsManager.getAllDefaults();
-  const updates: Record<string, string> = {};
-  for (const [name, value] of Object.entries(GPUSTACK_DEFAULTS)) {
-    // An environment value wins without being copied to disk.
-    if (holdsKey(process.env[name])) continue;
-    const current = persisted[name];
-    const atShippedDefault = typeof current === 'string'
-      && current.trim() === String(shipped[name as keyof SettingsDefaults] ?? '').trim();
-    // Empty, or still the shipped default the settings seeder wrote: writable.
-    if (holdsKey(current) && !atShippedDefault) continue;
-    updates[name] = value;
-  }
-  if (Object.keys(updates).length === 0) return;
+  const updates = gpustackDefaultUpdates(persisted, SettingsDefaultsManager.getAllDefaults());
+  if (!updates) return;
   if (!mergeSettings(updates)) return;
   log.info(`Configured the internal model gateway (GPUStack): ${Object.keys(updates).sort().join(', ')}.`);
 }

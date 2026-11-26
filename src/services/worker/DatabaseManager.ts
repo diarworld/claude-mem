@@ -23,6 +23,29 @@ import { ensureLocalDeviceIdentity } from '../sync/local-device-identity.js';
 import { SyncRecoveryReader } from '../sync/SyncRecoveryReader.js';
 import { initializeConflictRecoverySchema, SyncConflictRecovery } from '../sync/SyncConflictRecovery.js';
 
+/**
+ * The S3 Sync settings a manager construction bakes in: a change to any of
+ * them needs a fresh manager, not just a tick (the tick re-reads nothing).
+ * The identity the setup page's save is judged against.
+ */
+function s3SyncConstructionKey(settings: {
+  CLAUDE_MEM_S3_SYNC_ENDPOINT?: string;
+  CLAUDE_MEM_S3_SYNC_BUCKET?: string;
+  CLAUDE_MEM_S3_SYNC_REGION?: string;
+  CLAUDE_MEM_S3_SYNC_INCLUDE_CHROMA?: string;
+  CLAUDE_MEM_S3_SYNC_DEVICE?: string;
+  CLAUDE_MEM_S3_SYNC_MERGE_INTERVAL_MINUTES?: string;
+}): string {
+  return [
+    settings.CLAUDE_MEM_S3_SYNC_ENDPOINT ?? '',
+    settings.CLAUDE_MEM_S3_SYNC_BUCKET ?? '',
+    settings.CLAUDE_MEM_S3_SYNC_REGION ?? '',
+    settings.CLAUDE_MEM_S3_SYNC_INCLUDE_CHROMA ?? '',
+    settings.CLAUDE_MEM_S3_SYNC_DEVICE ?? '',
+    settings.CLAUDE_MEM_S3_SYNC_MERGE_INTERVAL_MINUTES ?? '',
+  ].join('|');
+}
+
 export class DatabaseManager {
   private db: Database | null = null;
   private sessionStore: SessionStore | null = null;
@@ -33,6 +56,8 @@ export class DatabaseManager {
   private syncConflictRecovery: SyncConflictRecovery | null = null;
   private backupManager: BackupManager | null = null;
   private s3SyncManager: S3SyncManager | null = null;
+  /** The enabling settings the running manager was constructed from (ensureS3SyncManager's replace test). */
+  private s3SyncConstructionKey: string | null = null;
   private mediaStore: MediaStore | null = null;
   private mediaCleanupTimer: ReturnType<typeof setInterval> | null = null;
   private mediaCloudSync: MediaCloudSync | null = null;
@@ -160,6 +185,7 @@ export class DatabaseManager {
         // lands in SyncApply's logged .catch (it cannot crash the tick).
         chromaSync: this.chromaSync,
       });
+      this.s3SyncConstructionKey = s3SyncConstructionKey(settings);
     }
 
     logger.info('DB', 'Database initialized (shared connection)');
@@ -245,6 +271,49 @@ export class DatabaseManager {
   }
 
   getS3SyncManager(): S3SyncManager | null {
+    return this.s3SyncManager;
+  }
+
+  /**
+   * The S3 Sync manager for the settings NOW on disk, constructing and starting
+   * it when the setup page enabled (or re-pointed) sync after this boot: the
+   * manager above is built once at init, so a choice-screen save would
+   * otherwise stay unapplied until the next worker restart. The mirror case is
+   * handled too: a save that disables sync stops the running manager instead
+   * of leaving it ticking until the next boot.
+   *
+   * Returns the running manager, or null when settings do not enable sync. A
+   * replacement stops the old scheduler in the background (an in-flight push
+   * settles; the new manager's first tick waits out its staggered initial
+   * delay) — the wizard's one-shot enable, the common case, never replaces
+   * anything.
+   */
+  ensureS3SyncManager(): S3SyncManager | null {
+    if (!this.db) return this.s3SyncManager;
+    const settings = SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH);
+    if (settings.CLAUDE_MEM_S3_SYNC_ENABLED !== 'true') {
+      const previous = this.s3SyncManager;
+      if (!previous) return null;
+      this.s3SyncManager = null;
+      this.s3SyncConstructionKey = null;
+      void previous.stop().catch((error: unknown) => {
+        logger.warn('DB', 'The disabled S3 Sync manager did not stop cleanly', {}, error instanceof Error ? error : new Error(String(error)));
+      });
+      logger.info('DB', 'S3 Sync manager stopped: the settings no longer enable it');
+      return null;
+    }
+    const constructionKey = s3SyncConstructionKey(settings);
+    if (this.s3SyncManager && this.s3SyncConstructionKey === constructionKey) return this.s3SyncManager;
+    const replaced = this.s3SyncManager;
+    if (replaced) {
+      void replaced.stop().catch((error: unknown) => {
+        logger.warn('DB', 'The replaced S3 Sync manager did not stop cleanly', {}, error instanceof Error ? error : new Error(String(error)));
+      });
+    }
+    this.s3SyncManager = new S3SyncManager(settings, { db: this.db, chromaSync: this.chromaSync });
+    this.s3SyncConstructionKey = constructionKey;
+    this.s3SyncManager.start();
+    logger.info('DB', 'S3 Sync manager started from the setup page\'s saved settings');
     return this.s3SyncManager;
   }
 

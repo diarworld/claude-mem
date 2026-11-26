@@ -334,6 +334,22 @@
 .card-gets > span { display: flex; align-items: flex-start; gap: 10px; }
 .card-gets svg { flex: none; width: 18px; height: 18px; margin-top: 1px; color: var(--violet); }
 
+/* The choice screen's integrations blocks: the internal model gateway's key and the S3 Sync enable (they ride the
+ * same Continue; the page saves them before it hands the choice over). */
+.setup-integrations { max-width: 520px; margin: 28px auto 0; display: grid; gap: 14px; text-align: left; }
+.setup-integrations-title { margin: 0; font-size: 19px; font-weight: 650; letter-spacing: -.01em; color: var(--ink); }
+.setup-integration { border: 1px solid #c7cbd8; border-radius: 16px; background: #fff; padding: 14px 16px 16px; display: grid; gap: 10px; }
+.setup-integration-head { font-weight: 600; font-size: 16px; color: var(--ink); }
+.setup-integration-fields { display: grid; gap: 10px; }
+.setup-field { display: grid; gap: 4px; color: var(--muted); font-size: 14px; }
+.setup-field input { width: 100%; min-height: 40px; padding: 8px 12px; border: 1px solid var(--edge); border-radius: 10px; background: #fff; color: var(--ink); font-size: 15px; }
+.setup-field input::placeholder { color: #9aa1b5; }
+.setup-s3-toggle { display: flex; align-items: flex-start; gap: 10px; cursor: pointer; }
+.setup-s3-toggle input { flex: none; width: 22px; height: 22px; margin: 1px 0 0; accent-color: var(--violet); cursor: pointer; }
+.setup-s3-toggle > span:last-child { display: grid; gap: 3px; }
+.setup-integration-note { color: var(--muted); font-size: 13.5px; line-height: 1.45; }
+.setup-key-saved { color: var(--muted); font-size: 13.5px; }
+
 /* Finish Setup (PROTO #route-finish-setup): connected tools apart from the ones that can be added (E8). */
 .setup-main.step-finish-setup { width: min(1180px, calc(100% - 64px)); }
 .finish-grid { display: grid; grid-template-columns: minmax(0, 1fr); gap: 22px; align-items: start; }
