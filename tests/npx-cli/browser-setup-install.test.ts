@@ -210,7 +210,7 @@ const spawnSyncSpy = spyOn(childProcess, 'spawnSync').mockImplementation(((comma
 
 // Loopback to the fixture worker is real. Signup and account pairing are recorded locally.
 const realFetch = globalThis.fetch;
-const { CMEM_INSTALLER_OAUTH_START_URL, CMEM_INSTALLER_OAUTH_POLL_URL } = await import('../../src/npx-cli/cmem-pro-costs.js');
+const { CMEM_INSTALLER_OAUTH_START_URL, CMEM_INSTALLER_OAUTH_POLL_URL } = await import('../../src/npx-cli/install/pairing.js');
 const pairingStarts: number[] = [];
 const pairingStartHeaders: Headers[] = [];
 /** What cmem.ai's pairing poll answers next, in order (a 410 is a cancelled or expired checkout). */

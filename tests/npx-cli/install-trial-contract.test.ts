@@ -6,17 +6,15 @@ import { INSTALL_RUN_BY_AUTO_UPDATE_ENV } from '../../src/shared/auto-update-ins
 import { CLOUD_SYNC_SETUP_CONTRACT, SETUP_CLOUD_SYNC_OFFERS, type SetupCloudSyncOffer } from '../../src/shared/setup-funnel';
 import {
   buildTrialReadySettings,
+  CMEM_PRO_BASE_URL,
+  CMEM_PRO_MODEL,
   lastOAuthStartErrorMessage,
   lastOAuthStartFailure,
   parseInstallerOAuthStartBody,
   parseTrialReadyBody,
   startInstallerOAuthPairing,
-} from '../../src/npx-cli/commands/install';
-import {
-  buildProviderLabels,
-  CMEM_PRO_BASE_URL,
-  CMEM_PRO_MODEL,
-} from '../../src/npx-cli/cmem-pro-costs';
+} from '../../src/npx-cli/install/pairing';
+import { buildProviderLabels } from '../../src/npx-cli/cmem-pro-costs';
 
 const repoRoot = process.cwd();
 const decoder = new TextDecoder();
@@ -38,7 +36,7 @@ function runCompletedPairingChild(body: Record<string, unknown>, initialSettings
         status: 200,
         headers: { 'content-type': 'application/json' },
       });
-      const { completeInstallerOAuthLogin } = await import('./src/npx-cli/commands/install.ts');
+      const { completeInstallerOAuthLogin } = await import('./src/npx-cli/install/pairing.ts');
       const pairing = {
         pairingId: 'PAIRING_ID_MUST_NOT_LEAK',
         secret: 'PAIRING_SECRET_MUST_NOT_LEAK',
@@ -928,7 +926,8 @@ describe('installer trial-ready contract', () => {
         CLAUDE_MEM_CLOUD_SYNC_HUB_URL: 'https://sync.cmem.ai',
       }, null, 2);
       writeFileSync(USER_SETTINGS_PATH, before);
-      const { parseTrialReadyBody, promptProvider } = await import('./src/npx-cli/commands/install.ts');
+      const { parseTrialReadyBody } = await import('./src/npx-cli/install/pairing.ts');
+      const { promptProvider } = await import('./src/npx-cli/commands/install.ts');
       const delivered = parseTrialReadyBody({
         status: 'ready', user_id: 'seat_user', setup_token: 'seat_setup_token',
         hub_url: 'https://sync.cmem.ai', plan: '${plan}',
@@ -975,7 +974,7 @@ describe('installer trial-ready contract', () => {
         status: 202,
         headers: { 'content-type': 'application/json' },
       });
-      const { completeInstallerOAuthLogin } = await import('./src/npx-cli/commands/install.ts');
+      const { completeInstallerOAuthLogin } = await import('./src/npx-cli/install/pairing.ts');
       setTimeout(() => process.emit('SIGINT'), 20);
       const result = await completeInstallerOAuthLogin({
         pairingId: 'PAIRING_ID_MUST_NOT_LEAK',

@@ -2,7 +2,7 @@ import { spawnSync } from 'node:child_process';
 import net from 'node:net';
 import type { SettingsDefaults } from '../shared/SettingsDefaultsManager.js';
 import { isCmemGatewayUrl } from '../shared/cmem-gateway.js';
-import { CMEM_PRO_BASE_URL, CMEM_PRO_MODEL } from './cmem-pro-costs.js';
+import { CMEM_PRO_BASE_URL, CMEM_PRO_MODEL } from './install/pairing.js';
 
 export const HOST_OBSERVER_DEFAULT_PORT = '37777';
 export const HOST_OBSERVER_DUMMY_API_KEY = 'host-observer-local';

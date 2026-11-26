@@ -15,7 +15,7 @@ import {
   buildInstallerOAuthStartBody,
   setInstallerSignupContext,
   startInstallerOAuthPairing,
-} from '../../src/npx-cli/commands/install.js';
+} from '../../src/npx-cli/install/pairing.js';
 
 const DAY = 86_400_000;
 // 2026-09-28T15:30:00Z

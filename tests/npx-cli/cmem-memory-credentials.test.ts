@@ -8,7 +8,7 @@ import {
   buildPersonalOpenRouterSettings,
   resolveCmemMemoryCredentials,
 } from '../../src/npx-cli/cmem-memory-credentials.js';
-import { CMEM_PRO_BASE_URL, CMEM_PRO_MODEL } from '../../src/npx-cli/cmem-pro-costs.js';
+import { CMEM_PRO_BASE_URL, CMEM_PRO_MODEL } from '../../src/npx-cli/install/pairing.js';
 
 const configuredCmemSettings = {
   CLAUDE_MEM_OPENROUTER_API_KEY: 'cm_pro_configured',

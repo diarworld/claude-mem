@@ -10,7 +10,7 @@ import {
   parseTeamBrainInvite,
   resolveTeamBrainUrl,
 } from '../../src/npx-cli/commands/teambrain.js';
-import { joinFailedMessage } from '../../src/npx-cli/commands/install.js';
+import { joinFailedMessage } from '../../src/npx-cli/install/pairing.js';
 import {
   MOCK_HUB_URL,
   MOCK_INVITE_TOKEN,

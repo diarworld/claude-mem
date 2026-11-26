@@ -1,10 +1,10 @@
 /**
- * OAuth, provider-choice, and CMEM Pro copy shared by the installer and its
- * contract tests. Keep this file static: the provider screen must render even
- * before the worker is running and must not depend on a pricing API.
+ * Provider-choice copy shared by the installer and its contract tests. Keep
+ * this file static: the provider screen must render even before the worker is
+ * running and must not depend on a pricing API. The OAuth pairing endpoints
+ * and the CMEM Pro inference settings live in install/pairing.ts.
  */
 
-import { cmemProOrigin } from '../shared/cmem-gateway.js';
 import { PRO_TRIAL_LABEL } from '../shared/pro-promo.js';
 
 export const PROVIDER_PROMPT_MESSAGE =
@@ -36,16 +36,3 @@ export function buildProviderLabels(): ProviderLabels {
     claudeHint: '',
   };
 }
-
-/** Overridable so the OAuth pairing flow can be tested against a dev server. */
-const CMEM_PRO_ORIGIN = cmemProOrigin();
-
-/** Starts a terminal/browser pairing without accepting an email address. */
-export const CMEM_INSTALLER_OAUTH_START_URL = `${CMEM_PRO_ORIGIN}/api/installer/oauth/start`;
-
-/** Reads authentication and, after Pro selection, enrollment progress. */
-export const CMEM_INSTALLER_OAUTH_POLL_URL = `${CMEM_PRO_ORIGIN}/api/pro/trial/poll`;
-
-/** Generic OpenAI-compatible settings used by the CMEM observer. */
-export const CMEM_PRO_BASE_URL = `${CMEM_PRO_ORIGIN}/api/inference/v1`;
-export const CMEM_PRO_MODEL = 'cmem-observer';

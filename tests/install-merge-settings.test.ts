@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
 import { mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
-import { buildTrialReadySettings, mergeSettings } from '../src/npx-cli/commands/install.js';
+import { buildTrialReadySettings, mergeSettings } from '../src/npx-cli/install/pairing.js';
 
 let tempDir: string;
 let settingsPath: string;

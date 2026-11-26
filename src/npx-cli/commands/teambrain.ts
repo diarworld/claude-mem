@@ -44,18 +44,17 @@ import {
 import { workerHttpRequest } from '../../shared/worker-utils.js';
 import { logger } from '../../utils/logger.js';
 import { getProjectContext } from '../../utils/project-name.js';
+import { openBrowser, waitForReturnToOpenBrowser } from '../install/open-browser.js';
 import {
   buildSyncConnectionSettings,
   lastOAuthStartErrorMessage,
   lastOAuthStartFailure,
   log,
   noteDeviceCode,
-  openBrowser,
   startInstallerOAuthPairing,
   waitForInstallerPairing,
-  waitForReturnToOpenBrowser,
   type TrialReadyResult,
-} from './install.js';
+} from '../install/pairing.js';
 
 declare const __DEFAULT_PACKAGE_VERSION__: string;
 const CLI_VERSION = typeof __DEFAULT_PACKAGE_VERSION__ !== 'undefined' ? __DEFAULT_PACKAGE_VERSION__ : '0.0.0-dev';
