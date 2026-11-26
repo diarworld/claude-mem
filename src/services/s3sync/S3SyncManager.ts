@@ -8,11 +8,13 @@
  * restarts and a push that just ran is not repeated by the next boot.
  */
 import { copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
+import { randomUUID } from 'crypto';
 import path from 'node:path';
 import os from 'node:os';
 import { paths, USER_SETTINGS_PATH } from '../../shared/paths.js';
 import { parseJsonWithBom, writeJsonFileAtomic } from '../../shared/atomic-json.js';
 import { loadClaudeMemEnv } from '../../shared/EnvManager.js';
+import { ORIGIN_DEVICE_ID_MAX_BYTES } from '../../shared/cloud-sync-limits.js';
 import { logger } from '../../utils/logger.js';
 import { BunS3Transport, type S3Transport } from './s3-transport.js';
 import { S3_SYNC_SETS, isValidGenerationStamp, type S3SyncManifest, type S3SyncManifestFile, type S3SyncSet,
@@ -108,7 +110,7 @@ const DEFAULT_INITIAL_DELAY_MS = 5 * 60_000;
 const MAX_TIMER_DELAY_MS = 2_147_483_647;
 
 interface PersistedSetState { lastPushAt: number | null; lastGeneration: string | null; lastError: string | null; lastPullAt: number | null; }
-interface PersistedState { version: 1; db: PersistedSetState; chroma: PersistedSetState; }
+interface PersistedState { version: 1; db: PersistedSetState; chroma: PersistedSetState; /** This device's stable replica-row identity, minted once (see ensureSyncIdentity). Optional only for state files written before it existed. */ syncIdentity?: string; }
 
 function emptySetState(): PersistedSetState {
   return { lastPushAt: null, lastGeneration: null, lastError: null, lastPullAt: null };
@@ -194,11 +196,32 @@ export class S3SyncManager {
   private loadState(): PersistedState {
     try {
       const state = parseJsonWithBom<PersistedState>(readFileSync(this.statePath(), 'utf-8'));
-      if (state && state.version === 1 && state.db && state.chroma) return state;
+      if (state && state.version === 1 && state.db && state.chroma) return this.ensureSyncIdentity(state);
     } catch {
       // Missing or unreadable state falls through to a fresh one.
     }
-    return { version: 1, db: emptySetState(), chroma: emptySetState() };
+    return this.ensureSyncIdentity({ version: 1, db: emptySetState(), chroma: emptySetState() });
+  }
+
+  /**
+   * The sync identity is this device's stable replica-row identity for
+   * SyncApply (S3 Sync v2): ops carry it verbatim as `origin_device_id`, and
+   * convergence keys on it — so it is minted once (`crypto.randomUUID()`)
+   * and persisted with the rest of the state. It is NOT the sanitized
+   * device-name bucket prefix (sanitizeDeviceName case-mangles a path
+   * component) and must never be derived from it: the bucket prefix routes
+   * storage, the sync identity names the replica. Byte length is validated
+   * against ORIGIN_DEVICE_ID_MAX_BYTES at mint — unreachable for a UUID, but
+   * the guard documents the constraint SyncApply enforces downstream.
+   */
+  private ensureSyncIdentity(state: PersistedState): PersistedState {
+    if (state.syncIdentity) return state;
+    const syncIdentity = randomUUID();
+    if (Buffer.byteLength(syncIdentity, 'utf-8') > ORIGIN_DEVICE_ID_MAX_BYTES) {
+      throw new Error(`sync identity exceeds ORIGIN_DEVICE_ID_MAX_BYTES (${ORIGIN_DEVICE_ID_MAX_BYTES}): ${syncIdentity}`);
+    }
+    this.saveState({ ...state, syncIdentity });
+    return { ...state, syncIdentity };
   }
 
   private saveState(state: PersistedState): void {
@@ -805,6 +828,8 @@ export class S3SyncManager {
     endpoint: string;
     bucket: string;
     device: string;
+    /** This device's stable replica-row identity (see ensureSyncIdentity). */
+    syncIdentity: string;
     sets: Record<S3SyncSet, S3SyncSetStatus>;
   } {
     const persisted = this.loadState();
@@ -822,6 +847,7 @@ export class S3SyncManager {
       endpoint: this.settings.CLAUDE_MEM_S3_SYNC_ENDPOINT || 'https://storage.yandexcloud.net',
       bucket: this.settings.CLAUDE_MEM_S3_SYNC_BUCKET || '',
       device: this.device,
+      syncIdentity: persisted.syncIdentity!, // minted by loadState → ensureSyncIdentity
       sets: { db: fromState('db'), chroma: fromState('chroma') },
     };
   }
