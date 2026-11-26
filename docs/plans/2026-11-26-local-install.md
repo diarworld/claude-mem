@@ -81,20 +81,11 @@ Expected: typecheck OK, tests PASS.
 
 **Step 3: Replace the `providerNeedsAccount` login gate (3773-3815)**
 - Delete `providerNeedsAccount` (2729-2731).
-- New gate:
-```ts
-const needsLocalKey = options.provider === 'gemini' || options.provider === 'openrouter';
-if (needsLocalKey) {
-  const persisted = readPersistedInstallerSettings();
-  const missing = missingProviderKey(options.provider, persisted);
-  if (missing && !missing.cmemGateway && isInteractive) {
-    // reuse the password prompt from completeUpdateProviderSetup (3011-3022)
-  } else if (missing && !missing.cmemGateway) {
-    // non-interactive: existing ABORT validation already covers this (validateNonInteractiveProvider)
-  }
-}
-```
-  - For `missing.cmemGateway` (persisted openrouter pointing at the cmem gateway with no key): no login — log `Keeping the existing configuration.` and continue (the machine already holds its setup; key handling is the user's).
+- Fresh-install defaults (no persisted provider): write into settings ONLY empty keys — `CLAUDE_MEM_PROVIDER=openrouter`, `CLAUDE_MEM_OPENROUTER_BASE_URL=https://gpustack.data.lmru.tech/v1`, `CLAUDE_MEM_OPENROUTER_MODEL=glm-5.3-flash`. Env (`CLAUDE_MEM_OPENROUTER_BASE_URL`/`_MODEL` in process.env or `~/.claude-mem/.env`) and existing non-empty settings always win — never overwrite. This applies to the terminal default path AND the funnel home choice (Task 7); a fresh machine's `providerSource` becomes `'default'` with provider `'openrouter'`.
+- Key handling after the defaults write:
+  - `openrouter` with no held key (`hasPersonalProviderKey` false — env/.env/settings all empty): interactive → password prompt `Paste your GPUStack API key:` (reuse the pattern from `completeUpdateProviderSetup` 3011-3022, saving to `CLAUDE_MEM_OPENROUTER_API_KEY`); non-interactive → the existing ABORT validation fires with remediation `Set CLAUDE_MEM_OPENROUTER_API_KEY (env or ~/.claude-mem/.env) or pass --provider claude.`; the non-TTY funnel run warns in the summary instead of prompting (never hangs).
+  - `gemini` without a held key: same local prompt pattern with its own key name.
+  - `claude` / `host` / `codex` → nothing.
 - Log copy for the skip cases: `Skipping claude-mem sign-in: this build installs fully locally.`
 - `completeUpdateProviderSetup` (2997-3024): delete the `missing.cmemGateway` OAuth branch (3003-3010); replace with `installerError(ABORT, …)` remediation: `The saved openrouter gateway key is missing. Save <key> in ~/.claude-mem/settings.json or pass --provider claude to switch to your Anthropic plan.`
 
@@ -107,9 +98,9 @@ const accountStatus = options.providerSource === 'persisted'
 ```
 
 **Step 5: CLI copy**
-- index.ts:40 help line → `…codex, gemini and openrouter are bring-your-own providers; claude and host need no account`.
-- index.ts:148-161 + `installer-provider-choice.ts`: grok-bot implicit default `'cmem'` → `'claude'`; update the doc comment (no installer OAuth).
-- Delete `tests/npx-cli/provider-account-gate.test.ts`; rewrite `tests/npx-cli/grok-bot-install-default.test.ts` for the `'claude'` default.
+- index.ts:40 help line → `…codex, gemini and openrouter are bring-your-own providers; a fresh install defaults to the internal model gateway (openrouter transport)`.
+- index.ts:148-161 + `installer-provider-choice.ts`: grok-bot implicit default `'cmem'` → the GPUStack default (resolve to `'openrouter'` — the defaults write supplies URL/model); update the doc comment (no installer OAuth).
+- Delete `tests/npx-cli/provider-account-gate.test.ts`; rewrite `tests/npx-cli/grok-bot-install-default.test.ts` for the GPUStack openrouter default.
 
 **Step 6: Telemetry allowlist**
 - `src/npx-cli/commands/telemetry.ts:93-98`: remove `installer_oauth_started`, `installer_oauth_completed`, `installer_oauth_timeout`, `installer_oauth_start_failed`, `installer_oauth_deferred`, `trial_activated` from the emitted-event allowlist (pairing.ts's own emitters now fire only for teambrain — if its emitters reference the allowlist, keep the four `installer_oauth_*` names but drop `installer_oauth_deferred` + `trial_activated`).
@@ -175,7 +166,7 @@ Also update `tests/npx-cli/combined-installer-non-tty-boundaries.test.ts` (238-2
    - `SetupChoice` (18-27): delete `cloudSyncOffer`, `shareWorkView`.
    - Delete `SetupCheckout` (29), `SetupStateFile.checkout` (37), `SetupCheckoutState` re-export (16).
    - `readSetupState` (110-125): drop `checkout` from the returned object; legacy files with `choice.branch === 'go'` pass through untouched (lenient cast already) — consumers branch on 'go' are deleted in Tasks 6-7.
-   - `hasProConfiguration` (148-156): KEEP (used for the kept-existing path).
+   - `hasProConfiguration` (148-156): broaden for the kept-existing path — `openrouter` + non-empty `CLAUDE_MEM_OPENROUTER_API_KEY` + ANY non-empty `CLAUDE_MEM_OPENROUTER_BASE_URL` (not only `isCmemGatewayUrl`), or configured cloud sync, counts as an existing configuration the funnel must keep (design 4a). Keep the function name and its cmem-gateway tuple detection working.
 3. New test `tests/shared/setup-state-legacy.test.ts`:
    - A state file saved by the OLD build (`choice: { branch: 'go', memoryBilling: 'existing', cloudSyncOffer: 'cloud_sync_monthly', chosenAt: … }`) reads back without throwing, `checkout` key ignored.
    - `parseSetupEvent` rejects a `cloud_sync_offer` action event.
@@ -216,7 +207,7 @@ Also update `tests/npx-cli/combined-installer-non-tty-boundaries.test.ts` (238-2
 **Steps:**
 1. `setup-flow.ts`: drop `cloudSyncOffer` state (27-31), `needsCheckout`/`canOfferHosted`/`nextAfterChoice` (55-68) — next is always `finish-setup`; `guardStep` (110-117) drops checkout/savings/'go'-import guards; `SETUP_PROGRESS_STEPS`/`PREVIOUS_STEP` keep words for legacy steps (`checkout`, `savings` stay defined — state-machine rule: screens never reach them, words remain).
 2. `setup-page.tsx`: alreadyPro (147-151) → skip choice entirely: auto-submit `{ branch: 'home', memoryBilling: 'existing' }` showing "Keeping your existing configuration."; delete `onStartTrial` (336), `openCheckout` (271-277), checkout effects (155-171), go tool filter (158-159, 194); `submitChoice` (183-185, 238-263) without offer/`open_checkout`; `FinishSetupScreen` without `branch` prop gating (346-347).
-3. `choice-screen.tsx`: delete the 'go' card (51-71), offers fieldset (87-95), `ORBIT`/`BRANCH_NAMES.go`/`OFFER_LABELS` (19-33); single 'home' card, submit `Use this computer`.
+3. `choice-screen.tsx`: delete the 'go' card (51-71), offers fieldset (87-95), `ORBIT`/`BRANCH_NAMES.go`/`OFFER_LABELS` (19-33); single 'home' card, submit `Use this computer`; home card copy — memory runs on the internal model gateway (replace the 'Your Claude account writes the memories' line; the terminal applies the GPUStack defaults from design 4a).
 4. `checkout-screen.tsx`, `savings-screen.tsx`: DELETE; remove their wiring (setup-page 339-344) and `PrivateWorkViewLink` in `shared.tsx` (18-23).
 5. `reveal-screen.tsx`: delete `onStartTrial` prop + trial CTA row (186-226, 262, 284).
 6. `finish-setup-screen.tsx`: drop `branch` gating (163, 201, 230) — import offer copy stays hidden (history only existed for 'go').
@@ -236,10 +227,11 @@ Also update `tests/npx-cli/combined-installer-non-tty-boundaries.test.ts` (238-2
 - New: `tests/npx-cli/install-local-contract.test.ts`
 
 **New tests (TDD — they must FAIL against any regression that reintroduces a cmem.ai call):**
-1. `non-interactive install makes no request to cmem.ai`: run the non-TTY install harness (`combined-installer-non-tty-boundaries` pattern) with a fetch mock that THROWS on any URL containing `cmem.ai` → install completes, provider claude.
-2. `reinstall keeps the persisted provider`: persisted `CLAUDE_MEM_PROVIDER=openrouter` + gateway key in settings → run browser-setup applyChoice home → settings unchanged (no `useSubscriptionAuth` wipe), stage `home-kept-existing`.
-3. `legacy go setup state is tolerated`: pre-seed `setup-state.json` with old go choice → install resume path completes.
-4. `gemini without key prompts locally`: interactive harness → password prompt appears, no fetch to cmem.ai.
+1. `non-interactive install makes no request to cmem.ai`: run the non-TTY install harness (`combined-installer-non-tty-boundaries` pattern) with a fetch mock that THROWS on any URL containing `cmem.ai` → install completes, provider openrouter (GPUStack defaults) when a key is held in env, or ABORT with the env-var remediation when not.
+2. `fresh install writes GPUStack defaults into empty settings only`: no persisted provider → settings gain provider openrouter + `https://gpustack.data.lmru.tech/v1` + `glm-5.3-flash`; with `CLAUDE_MEM_OPENROUTER_BASE_URL` in env or an existing non-empty value, the installer leaves it untouched.
+3. `reinstall keeps the persisted provider`: persisted `CLAUDE_MEM_PROVIDER=openrouter` + GPUStack base URL + key in settings → run browser-setup applyChoice home → settings unchanged (no `useSubscriptionAuth` wipe), stage `home-kept-existing`.
+4. `legacy go setup state is tolerated`: pre-seed `setup-state.json` with old go choice → install resume path completes.
+5. `openrouter/gemini without key prompts locally`: interactive harness → password prompt appears, no fetch to cmem.ai.
 
 **Verify:** `bun test tests/npx-cli/install-local-contract.test.ts` → PASS.
 **Commit:** `test(installer): local-only install contract coverage`

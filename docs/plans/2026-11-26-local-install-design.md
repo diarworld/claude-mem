@@ -28,21 +28,24 @@
 
 ### 1. Terminal flow (`install.ts`)
 
-- `promptProvider`: remove the `cmem` option and the whole CMEM Pro branch (`completeCmemTrialPairing`, `resolveCmemMemoryCredentials` promotion, `buildProviderLabels` cmem labels). Remaining choices: `claude` (default, logged-in Anthropic plan) and explicit flags `codex|gemini|openrouter|host`.
+- `promptProvider`: remove the `cmem` option and the whole CMEM Pro branch (`completeCmemTrialPairing`, `resolveCmemMemoryCredentials` promotion, `buildProviderLabels` cmem labels). Remaining choices: the GPUStack default (fresh install writes openrouter + internal gateway, see 4a) and explicit flags `codex|gemini|openrouter|host|claude`.
 - Replace the `providerNeedsAccount` login gate with a local key check:
+  - Fresh install without a persisted provider → write the GPUStack defaults (4a), then:
   - `gemini` / `openrouter` without a held key → local interactive prompt "Paste your API key" (reuse the existing password-prompt pattern from `completeUpdateProviderSetup`); non-interactive keeps the existing ABORT validation.
   - `claude` / `host` / `codex` → nothing.
 - `completeUpdateProviderSetup`: drop the `cmemGateway` OAuth repair branch; instead a clear error tells the user to keep the persisted key or switch with `--provider claude`.
 - `offerDeferredLogin`: deleted entirely.
 - `requireInstallerOAuthLogin`, `startInstallerOAuthPairing`, `completeCmemTrialPairing`, `startOnTheGoPairing`, `activateBrowserEnrollment`, `noteDeviceCode`, `waitForReturnToOpenBrowser` (if no remaining callers): deleted.
 - Copy: `index.ts` help line about cmem.ai sign-in; "Skipping claude-mem login" messages reworded. Passive text links (installer summary) are intentionally left: they open nothing.
+- Fresh-install defaults: write the GPUStack settings (4a) — provider openrouter, internal base URL, model glm-5.3-flash — only into empty settings, never over env/.env/existing values. grok-bot implicit default → same GPUStack default.
 
 ### 2. GUI funnel
 
 - `setup-funnel.ts`: `SETUP_BRANCHES = ['home']`. Parsing of saved states still accepts legacy `branch: 'go'` and treats it as "keep existing configuration" so a live install is not broken by the upgrade. Cloud-sync offer types and validation removed.
-- `browser-setup.ts`: `BrowserCheckout` and the checkout loop removed; `applyChoice` home branch keeps a persisted provider (`providerSource: 'persisted'`) instead of forcing `claude` (today `useSubscriptionAuth()` would wipe a Pro config).
+- `browser-setup.ts`: `BrowserCheckout` and the checkout loop removed; `applyChoice` home branch keeps a persisted configuration (`providerSource: 'persisted'`) instead of forcing `claude` (today `useSubscriptionAuth()` would wipe a Pro config). A fresh machine's home choice writes the GPUStack defaults (4a); the key prompt runs in the terminal when interactive, a non-TTY funnel run warns instead of prompting.
+- "Already configured" check (`hasProConfiguration` in setup-state.ts) broadens for the kept-existing path: any `openrouter` + non-empty `BASE_URL` + held key counts, not only the cmem.ai gateway URL (4a).
 - Viewer UI:
-  - `choice-screen.tsx`: only the "This computer" card remains.
+  - `choice-screen.tsx`: only the "This computer" card remains; copy says memory runs on the internal model gateway (not the Claude account).
   - `setup-page.tsx`: no `onStartTrial`, no auto-'go' for alreadyPro; alreadyPro goes straight to home keeping the existing config.
   - `finish-setup-screen.tsx`: `branch === 'go'` conditionals removed.
   - Locale files keep now-unused keys (harmless); no locale churn.
@@ -58,8 +61,20 @@
 - Worker-side cloud sync.
 - Viewer/header cmem.ai notices outside the installer.
 
+### 4a. Defaults for fresh installs (user-confirmed 2026-11-26)
+
+The default configuration a fresh install writes points at the internal model gateway, not the Anthropic plan:
+
+- Fresh install with no persisted provider writes: `CLAUDE_MEM_PROVIDER=openrouter`, `CLAUDE_MEM_OPENROUTER_BASE_URL=https://gpustack.data.lmru.tech/v1`, `CLAUDE_MEM_OPENROUTER_MODEL=glm-5.3-flash`. Never overwrite non-empty settings or values provided via environment / `~/.claude-mem/.env`.
+- The GPUStack key is never hardcoded: it is read from `CLAUDE_MEM_OPENROUTER_API_KEY` (env / `.env` / existing settings). Interactive install prompts "Paste your GPUStack API key" when missing; a non-interactive install aborts with remediation pointing at the env var. (The rare non-TTY browser-funnel run warns instead of hanging on a prompt.)
+- `--provider claude` (Anthropic plan) stays available as an explicit flag.
+- grok-bot's implicit default becomes the same GPUStack openrouter default.
+- "Already configured" for the kept-existing path broadens: any `openrouter` + non-empty `BASE_URL` + held key (not only the cmem.ai gateway URL), or a configured cloud sync, keeps the existing configuration untouched on reinstall.
+
 ### 5. New tests
 
+- Fresh install writes the GPUStack defaults (provider openrouter, internal base URL, glm-5.3-flash) and never overwrites env/.env/existing values.
+- Non-interactive install without the gateway key aborts with the env-var remediation; interactive install prompts locally (no cmem.ai request).
 - Home branch preserves a persisted provider on reinstall (config not wiped).
 - Non-interactive install completes with no network access to cmem.ai (no pairing start attempted).
 - Local key prompt path for `gemini`/`openrouter` with missing key.
