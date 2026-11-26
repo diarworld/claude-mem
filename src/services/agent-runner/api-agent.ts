@@ -189,6 +189,11 @@ function answerFormatBodies(format: AnswerFormat, schema?: Record<string, unknow
  * question as `json_object`. A 400 about anything else (a context-length
  * refusal, say) is reported as it came, with no second request. Nothing else is retried, and no refusal ever moves the work
  * to another provider.
+ *
+ * The one non-refusal retry is an answer cut off at the output-token cap
+ * (`finish reason: length`): the question is asked once more, fresh, with a
+ * brevity instruction. A truncated answer is never returned — a second
+ * cut-off fails the step with the same words as before.
  */
 export async function askApiTarget(target: ApiTarget, prompt: string, options: ApiAskOptions = {}): Promise<string> {
   const model = options.model?.trim() || target.model;
@@ -213,7 +218,7 @@ export async function askApiTarget(target: ApiTarget, prompt: string, options: A
   const timeoutSignal = AbortSignal.timeout(timeoutMs);
   const signal = options.abortSignal ? AbortSignal.any([timeoutSignal, options.abortSignal]) : timeoutSignal;
 
-  const send = async () => fetch(target.url, {
+  const send = async (brevityNudge?: string) => fetch(target.url, {
     method: 'POST',
     signal,
     // Bun's fetch fails a request after 5 minutes without a byte (BUN_CONFIG_HTTP_IDLE_TIMEOUT), and a
@@ -230,44 +235,72 @@ export async function askApiTarget(target: ApiTarget, prompt: string, options: A
       ...(includeReasoning ? reasoning : {}),
       ...(format === 'none' ? {} : answerFormatBodies(format, options.answerSchema)),
       messages: [
-        { role: 'system', content: options.systemPrompt?.trim() || SYSTEM_PROMPT },
+        { role: 'system', content: [options.systemPrompt?.trim() || SYSTEM_PROMPT, brevityNudge].filter(Boolean).join('\n\n') },
         { role: 'user', content: prompt },
       ],
     }, extraBody, target.url, true)),
   });
 
   // At most one retry per refusal kind: the reasoning field, the token field, then the answer format.
-  for (let attempt = 0; attempt < 4; attempt++) {
-    const response = await send();
-    if (response.ok) return readAnswer(response, target, maxOutputTokens);
-    if (response.status !== 400 && response.status !== 422) throw await refusal(response, target);
-    const text = await response.clone().text().catch(() => '');
-    if (includeReasoning && isUnknownReasoningParameter(text)) {
-      if (rememberEndpointRejectsReasoningField(target.url, reasoning)) {
-        logger.warn('WORKER', `${providerLabel(target.provider)} rejected the reasoning field; resending without it`, { url: target.url });
+  const run = async (brevityNudge?: string): Promise<string> => {
+    for (let attempt = 0; attempt < 4; attempt++) {
+      const response = await send(brevityNudge);
+      if (response.ok) return readAnswer(response, target, maxOutputTokens);
+      if (response.status !== 400 && response.status !== 422) throw await refusal(response, target);
+      const text = await response.clone().text().catch(() => '');
+      if (includeReasoning && isUnknownReasoningParameter(text)) {
+        if (rememberEndpointRejectsReasoningField(target.url, reasoning)) {
+          logger.warn('WORKER', `${providerLabel(target.provider)} rejected the reasoning field; resending without it`, { url: target.url });
+        }
+        includeReasoning = false;
+        continue;
       }
-      includeReasoning = false;
-      continue;
+      // "Reasoning is mandatory for this endpoint and cannot be disabled": resend without the field, and do not
+      // remember it against the URL, because a router picks a different model next time (#5265).
+      if (includeReasoning && isReasoningDisabledRejection(text)) {
+        includeReasoning = false;
+        continue;
+      }
+      if (!useMaxCompletionTokens && isMaxCompletionTokensCompatibilityError(response.status, text)) {
+        useMaxCompletionTokens = true;
+        continue;
+      }
+      const next = formats[formats.indexOf(format) + 1];
+      if (next && isUnsupportedAnswerFormat(text)) {
+        format = next;
+        continue;
+      }
+      throw await refusal(response, target, text);
     }
-    // "Reasoning is mandatory for this endpoint and cannot be disabled": resend without the field, and do not
-    // remember it against the URL, because a router picks a different model next time (#5265).
-    if (includeReasoning && isReasoningDisabledRejection(text)) {
-      includeReasoning = false;
-      continue;
-    }
-    if (!useMaxCompletionTokens && isMaxCompletionTokensCompatibilityError(response.status, text)) {
-      useMaxCompletionTokens = true;
-      continue;
-    }
-    const next = formats[formats.indexOf(format) + 1];
-    if (next && isUnsupportedAnswerFormat(text)) {
-      format = next;
-      continue;
-    }
-    throw await refusal(response, target, text);
+    throw new Error(`${providerLabel(target.provider)} kept refusing the request.`);
+  };
+
+  try {
+    return await run();
+  } catch (error) {
+    // A cut-off answer to a step question is a looped model, not a long answer: no real step
+    // needs the whole output budget. One fresh retry with a brevity instruction is the cheap
+    // escape; if the model loops again, the step fails exactly as before.
+    if (!(error instanceof AnswerLimitError)) throw error;
+    logger.warn('WORKER', `${providerLabel(target.provider)} hit the ${maxOutputTokens}-token answer limit; one retry with a brevity instruction`);
+    return await run(ANSWER_BREVITY_NUDGE);
   }
-  throw new Error(`${providerLabel(target.provider)} kept refusing the request.`);
 }
+
+/** The provider's answer ran into the output-token cap and is incomplete. */
+class AnswerLimitError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'AnswerLimitError';
+  }
+}
+
+/**
+ * The one fresh retry after a cut-off answer. It names the discipline rather
+ * than pretending the model saw its own attempt: a step answer that reaches
+ * the output-token cap is never a real one — the model looped.
+ */
+const ANSWER_BREVITY_NUDGE = 'Keep the answer far below the output-token limit: emit each item exactly once, never repeat yourself, and stop as soon as the task is answered.';
 
 /** The answer text of a chat completion, whatever shape the endpoint used for it. */
 async function readAnswer(response: Response, target: ApiTarget, maxOutputTokens: number): Promise<string> {
@@ -277,7 +310,7 @@ async function readAnswer(response: Response, target: ApiTarget, maxOutputTokens
   const choice = data?.choices?.[0];
   // A cut-off answer is broken JSON or a partial story: fail the step, never hand it to the validators.
   if (choice?.finish_reason === 'length') {
-    throw new Error(`${providerLabel(target.provider)} stopped at the ${maxOutputTokens}-token answer limit (finish reason: length); the answer is incomplete.`);
+    throw new AnswerLimitError(`${providerLabel(target.provider)} stopped at the ${maxOutputTokens}-token answer limit (finish reason: length); the answer is incomplete.`);
   }
   if (choice?.finish_reason === 'content_filter') {
     throw new Error(`${providerLabel(target.provider)} omitted content from the answer (finish reason: content_filter); the answer is incomplete.`);
