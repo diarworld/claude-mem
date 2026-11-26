@@ -1,0 +1,185 @@
+---
+title: "S3 Sync (own bucket)"
+description: "Snapshot sync of your memory database, chroma vector index and configuration to an own S3-compatible bucket — scheduled pushes, on-demand pull and a per-device restore path, with no account and no hub."
+---
+
+# S3 Sync (own bucket)
+
+S3 Sync snapshots your claude-mem data to **an S3-compatible bucket that you
+own** — for example Yandex Object Storage. It is built into the worker:
+**there is no daemon — the worker pushes on a schedule**. There is no hub and
+no account: the bucket is the other side.
+
+It is a **backup and restore** feature, not a merge engine:
+the newest generation wins, per device. See [Safety and limits](#safety-and-limits).
+
+<Warning>
+**Snapshots are plaintext.** Everything uploaded — including your settings and
+by default your `.env` — is stored unencrypted in the bucket. A **private
+bucket is the only protection**. No client-side encryption is a deliberate,
+documented choice: keep the bucket private and the access keys secret.
+</Warning>
+
+## What it is
+
+Two snapshot **sets** are kept in the bucket, each as a chain of
+generation-stamped snapshots (gzipped, SHA-256 manifest, old generations
+pruned):
+
+- **db set** — the memory database plus configuration (see
+  [What is synced](#what-is-synced)).
+- **chroma set** — the chroma vector index used by search.
+
+**Push** runs on a schedule in the worker — the db set every 6 hours, the
+chroma set every 24 hours by default, with the first run about 5 minutes after
+the worker starts — and can be triggered on demand. **Pull** is always
+on-demand: it downloads, verifies every file's SHA-256, and **stages** the
+restore; the next worker boot applies it. Nothing is applied underneath a
+running worker.
+
+## Setup
+
+S3 Sync is **off by default**. To enable it:
+
+1. Create a **private** bucket in your S3-compatible storage. With Yandex
+   Object Storage: create a bucket with *Object locking* and *public access*
+   off, and issue **static access keys**.
+2. Put the credentials in `~/.claude-mem/.env`:
+
+   ```bash
+   S3_SYNC_ACCESS_KEY_ID=...
+   S3_SYNC_SECRET_ACCESS_KEY=...
+   ```
+
+3. Set the bucket (and any non-default options) in `~/.claude-mem/settings.json`:
+
+   ```json
+   {
+     "CLAUDE_MEM_S3_SYNC_ENABLED": "true",
+     "CLAUDE_MEM_S3_SYNC_BUCKET": "my-memory-backups"
+   }
+   ```
+
+4. **Restart the worker** (`npx claude-mem restart`). Check the connection with
+   `npx claude-mem s3sync status`.
+
+Yandex Object Storage needs no endpoint or region overrides — the defaults
+already point there (`https://storage.yandexcloud.net`, region
+`ru-central1`). For another S3-compatible provider, set
+`CLAUDE_MEM_S3_SYNC_ENDPOINT` and `CLAUDE_MEM_S3_SYNC_REGION` accordingly.
+
+## Settings
+
+All keys live in `~/.claude-mem/settings.json`. Credentials never do — they
+are read from `~/.claude-mem/.env` only.
+
+| Key | Default | Meaning |
+|-----|---------|---------|
+| `CLAUDE_MEM_S3_SYNC_ENABLED` | `'false'` | Master switch. `'true'` constructs the manager at worker start; the CLI and endpoints answer with guidance while it is `'false'`. |
+| `CLAUDE_MEM_S3_SYNC_BUCKET` | `''` | Bucket name. **Empty = sync off** even when enabled. |
+| `CLAUDE_MEM_S3_SYNC_ENDPOINT` | `'https://storage.yandexcloud.net'` | S3-compatible endpoint. |
+| `CLAUDE_MEM_S3_SYNC_REGION` | `'ru-central1'` | Bucket region. |
+| `CLAUDE_MEM_S3_SYNC_DEVICE` | `''` | Bucket prefix for this machine. **Empty = `os.hostname()`.** See [Restore on a new machine](#restore-on-a-new-machine). |
+| `CLAUDE_MEM_S3_SYNC_DB_INTERVAL_HOURS` | `'6'` | db set push cadence in hours. Non-positive or garbage values fall back to the default. |
+| `CLAUDE_MEM_S3_SYNC_CHROMA_INTERVAL_HOURS` | `'24'` | chroma set push cadence in hours. |
+| `CLAUDE_MEM_S3_SYNC_INCLUDE_CHROMA` | `'true'` | `'false'` disables the chroma set: scheduled pushes skip it silently, an explicit `s3sync push --set chroma` answers `400`, and pulls ignore it. |
+| `CLAUDE_MEM_S3_SYNC_INCLUDE_ENV` | `'true'` | Whether `.env` (which holds your **plaintext** S3 keys and any other secrets) travels with the db set. Set `'false'` to exclude it. |
+| `CLAUDE_MEM_S3_SYNC_KEEP_GENERATIONS` | `'5'` | Generations kept per set in the bucket; older ones are pruned after each successful push. |
+
+## Commands
+
+`npx claude-mem s3sync [status|push|pull]` — a thin client over the worker's
+`/api/s3sync/*` endpoints; the worker owns the snapshot engine, the S3
+transport and the restore staging.
+
+- **`s3sync status`** — bucket, endpoint and device, then per set: phase,
+  last push, last pull, current generation, next scheduled run, and the last
+  error if any.
+- **`s3sync push [--set db|chroma|all]`** — push now. Default is `all`, which
+  reports the combined uploaded object count and bytes (the printed
+  generation is the db set's). When a push is already running the command
+  fails with `409`; asking for a set that is disabled by
+  `CLAUDE_MEM_S3_SYNC_INCLUDE_CHROMA=false` fails with `400`.
+- **`s3sync pull [--set db|chroma|all] [--generation <ts>] [--force]`** —
+  download the remote `LATEST` generation (or the given one), verify every
+  file's SHA-256, and stage the restore; the CLI then **restarts the worker**
+  so the staged copies apply at boot. If every requested set is skipped
+  (an empty bucket has no `LATEST`), the command prints
+  `Nothing to pull from S3.` with the per-set reasons and **does not restart**.
+  `--force` accepts a chroma index whose paired db generation does not match
+  the pulled db and marks every project's index for rebuild.
+
+The worker also exposes `GET /api/s3sync/status` (registered unconditionally —
+an unconfigured install answers `{"configured": false}`), `POST
+/api/s3sync/push` and `POST /api/s3sync/pull`. Pushes and pulls from a
+*different* localhost origin in a browser are refused, like settings writes.
+
+## What is synced
+
+The **db set** contains:
+
+- `claude-mem.db` — the memory database, snapshotted with SQLite
+  `VACUUM INTO` (a verified-consistent copy, never a live-file copy) and
+  gzipped;
+- `work-view-reviews.db` — when present;
+- `settings.json`, `MY-RULES.md`, `chroma-sync-state.json`;
+- `.env` — **only while `CLAUDE_MEM_S3_SYNC_INCLUDE_ENV` is `'true'`** (the
+  default; see the plaintext warning at the top);
+- `state/*.json` — persisted worker state files.
+
+The **chroma set** is the vector index directory.
+
+Never synced: `logs/`, derived caches and anything else not listed above. An
+unchanged set pushes nothing: if the local snapshot still matches the last
+generation in the bucket, the push is skipped (an emptied bucket is detected
+and repushed in full — self-heal).
+
+## Restore on a new machine
+
+The bucket layout is **per device** — `claude-mem-sync/<device>/…` — and
+`LATEST` per set always names the newest generation. To restore:
+
+1. Install claude-mem on the new machine.
+2. Set `CLAUDE_MEM_S3_SYNC_DEVICE` in `~/.claude-mem/settings.json` to the
+   **source machine's device name** — exactly the `Device:` line shown by
+   `npx claude-mem s3sync status` — plus the bucket keys and credentials as in
+   [Setup](#setup).
+3. Run `npx claude-mem s3sync pull`. It downloads and verifies the newest
+   generation, stages it, and **restarts the worker for you**.
+4. At boot the staged database replaces the local one through the
+   pending-restore swap, and the staged chroma index is swapped in by a
+   boot-time directory swap. The previous chroma directory is kept as
+   `chroma-pre-restore-<ts>` (newest 2 are kept). Pulled db snapshots land in
+   `backups/` as `claude-mem-<generation>-from-s3.db`.
+
+<Warning>
+**One device root = one writer.** Everything under
+`claude-mem-sync/<device>/` is last-write-wins. Two live machines sharing a
+device name **overwrite each other's snapshots** — a push from one silently
+replaces what the other just uploaded. Set a stable, distinct
+`CLAUDE_MEM_S3_SYNC_DEVICE` on every machine from day one (do not rely on
+hostname fallback if machine names can collide or change).
+</Warning>
+
+## Safety and limits
+
+- **Plaintext in the bucket.** Snapshots are uploaded unencrypted. A private
+  bucket with no public access is the only protection; anyone with the access
+  keys reads everything, including settings and by default `.env`. There is no
+  client-side encryption — a deliberate choice, documented here. To keep
+  `.env` out of the bucket entirely, set
+  `CLAUDE_MEM_S3_SYNC_INCLUDE_ENV: "false"` (then restore credentials by hand
+  on a new machine).
+- **No merge, no conflict resolution.** Restoring a snapshot replaces the
+  local state wholesale. Across machines, the last push wins per device;
+  concurrent edits on different machines are not merged — S3 Sync moves
+  snapshots, it does not reconcile them. For record-level multi-device sync
+  use [Cloud Sync](/cloud-sync).
+- **Consistent copies.** db snapshots use SQLite `VACUUM INTO`, so a push
+  never captures a half-written database, and every downloaded file is
+  SHA-256-verified against the generation's manifest before anything is
+  staged.
+- **Applies at boot only.** Staged restores are swapped in before the worker
+  opens the database, so a restore can never race a running worker. A restore
+  failure keeps the existing database and reports the error in
+  `s3sync status`.

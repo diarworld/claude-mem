@@ -166,6 +166,7 @@
         "pages": [
           "hosted-server",
           "cloud-sync",
+          "s3-sync",
           "cmem-pro-headless",
           "usage/backups"
         ]
