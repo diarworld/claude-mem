@@ -41,7 +41,7 @@ function makeFixture(dir: string): string {
   return dir;
 }
 
-function makeManager(dir: string, transport: S3Transport, overrides: Record<string, unknown> = {}): S3SyncManager {
+function makeManager(dir: string, transport: S3Transport, overrides: Record<string, unknown> = {}, settingsOverrides: Record<string, string> = {}): S3SyncManager {
   return new S3SyncManager(
     {
       CLAUDE_MEM_S3_SYNC_ENABLED: 'true',
@@ -54,6 +54,7 @@ function makeManager(dir: string, transport: S3Transport, overrides: Record<stri
       CLAUDE_MEM_S3_SYNC_INCLUDE_ENV: 'true',
       CLAUDE_MEM_S3_SYNC_INCLUDE_CHROMA: 'true',
       CLAUDE_MEM_S3_SYNC_DEVICE: 'testbox',
+      ...settingsOverrides,
     },
     {
       transport,
@@ -150,5 +151,48 @@ describe('s3 sync push pipeline', () => {
     const s3 = new FakeS3();
     const manager = makeManager(dir, s3);
     await expect(manager.runNow('chroma')).rejects.toThrow(/db set/i);
+  });
+
+  test('prune deletes every object of generations beyond keep, LATEST points at the newest', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 's3sync-push-'));
+    makeFixture(dir);
+    const s3 = new FakeS3();
+    let clock = 1764000000000;
+    const manager = makeManager(dir, s3, { now: () => clock }, { CLAUDE_MEM_S3_SYNC_KEEP_GENERATIONS: '1' });
+    const first = await manager.runNow('db');
+    expect(first).not.toBeNull();
+    // change the db so the second push opens a new generation
+    const db = new Database(join(dir, 'claude-mem.db'));
+    db.query('INSERT INTO observations (body) VALUES (?)').run('more');
+    db.close();
+    clock += 60_000; // a new stamp, so the second push cannot reuse the first generation
+    const second = await manager.runNow('db');
+    expect(second!.generation).not.toBe(first!.generation);
+    const firstGenPrefix = `claude-mem-sync/testbox/db/gen/${first!.generation}/`;
+    for (const key of s3.objects.keys()) {
+      expect(key.startsWith(firstGenPrefix)).toBe(false);
+    }
+    expect(s3.objects.has(`claude-mem-sync/testbox/db/gen/${second!.generation}/manifest.json`)).toBe(true);
+    expect(parseLatestMarker(s3.objects.get('claude-mem-sync/testbox/db/LATEST')!.toString())?.generation).toBe(second!.generation);
+  });
+
+  test('push self-heals when the bucket was wiped', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 's3sync-push-'));
+    makeFixture(dir);
+    const s3 = new FakeS3();
+    let clock = 1764000000000;
+    const manager = makeManager(dir, s3, { now: () => clock });
+    const first = await manager.runNow('db');
+    expect(first).not.toBeNull();
+    // simulate an operator/lifecycle wipe: the bucket loses every object
+    s3.objects.clear();
+    s3.order = [];
+    clock += 60_000; // a new stamp, so the repush opens a fresh generation
+    // no local changes — only the empty bucket forces the full repush
+    const second = await manager.runNow('db');
+    expect(second!.uploaded).toBeGreaterThan(0);
+    expect(second!.generation).not.toBe(first!.generation);
+    expect(s3.objects.has('claude-mem-sync/testbox/db/LATEST')).toBe(true);
+    expect(s3.objects.has(`claude-mem-sync/testbox/db/gen/${second!.generation}/manifest.json`)).toBe(true);
   });
 });

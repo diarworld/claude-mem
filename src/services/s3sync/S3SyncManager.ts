@@ -114,13 +114,24 @@ export class S3SyncManager {
     this.stateDir = options.stateDir ?? path.join(this.dataDir, 'state');
     this.s3syncDir = path.join(this.dataDir, 'state', 's3sync');
     this.device = settings.CLAUDE_MEM_S3_SYNC_DEVICE?.trim() || os.hostname();
+    const fileEnv = loadClaudeMemEnv();
     this.transport = options.transport ?? new BunS3Transport({
       endpoint: settings.CLAUDE_MEM_S3_SYNC_ENDPOINT || 'https://storage.yandexcloud.net',
       bucket: settings.CLAUDE_MEM_S3_SYNC_BUCKET || '',
       region: settings.CLAUDE_MEM_S3_SYNC_REGION || 'ru-central1',
-      accessKeyId: options.env?.S3_SYNC_ACCESS_KEY_ID ?? loadClaudeMemEnv().S3_SYNC_ACCESS_KEY_ID ?? '',
-      secretAccessKey: options.env?.S3_SYNC_SECRET_ACCESS_KEY ?? loadClaudeMemEnv().S3_SYNC_SECRET_ACCESS_KEY ?? '',
+      accessKeyId: options.env?.S3_SYNC_ACCESS_KEY_ID ?? fileEnv.S3_SYNC_ACCESS_KEY_ID ?? '',
+      secretAccessKey: options.env?.S3_SYNC_SECRET_ACCESS_KEY ?? fileEnv.S3_SYNC_SECRET_ACCESS_KEY ?? '',
     });
+    // Rehydrate the phase from the persisted run facts: a set that already
+    // pushed resumes as ok (or error when its last run failed); idle is only
+    // the value for a set that never pushed. Keeps CLI status truthful after
+    // a restart. setPhase stays the single writer of this.phases.
+    const persisted = this.loadState();
+    for (const set of S3_SYNC_SETS) {
+      if (persisted[set].lastGeneration !== null) {
+        this.setPhase(set, persisted[set].lastError ? 'error' : 'ok');
+      }
+    }
   }
 
   // --- persisted state ---------------------------------------------------
@@ -217,10 +228,15 @@ export class S3SyncManager {
   // --- schedule loop (shape copied from BackupManager.schedule/tick) -----
 
   private intervalMs(set: S3SyncSet): number {
-    const hours = set === 'db'
-      ? Number(this.settings.CLAUDE_MEM_S3_SYNC_DB_INTERVAL_HOURS) || 6
-      : Number(this.settings.CLAUDE_MEM_S3_SYNC_CHROMA_INTERVAL_HOURS) || 24;
-    // Guard against zero/negative/garbage cadences parking the loop.
+    const defaultHours = set === 'db' ? 6 : 24;
+    const parsed = Number(set === 'db'
+      ? this.settings.CLAUDE_MEM_S3_SYNC_DB_INTERVAL_HOURS
+      : this.settings.CLAUDE_MEM_S3_SYNC_CHROMA_INTERVAL_HOURS);
+    // Negatives, zero, NaN and garbage all fall back to the default cadence.
+    // (`Number('-1')` is truthy, so an `|| default` fallback alone would accept
+    // it and the 1 ms floor below would turn one operator typo into
+    // back-to-back full pushes — a VACUUM plus paid uploads on every tick.)
+    const hours = Number.isFinite(parsed) && parsed > 0 ? parsed : defaultHours;
     return Math.max(1, hours * 3_600_000);
   }
 
@@ -271,6 +287,7 @@ export class S3SyncManager {
   // --- on-demand runs ----------------------------------------------------
 
   async runNow(set: S3SyncSet | 'all'): Promise<S3SyncPushOutcome | null> {
+    if (this.stopped) throw new Error('S3 sync manager stopped');
     if (set === 'all') {
       const db = await this.pushSet('db');
       const chroma = this.chromaEnabled() ? await this.pushSet('chroma') : null;
@@ -335,12 +352,20 @@ export class S3SyncManager {
       // current, so no new generation is opened and nothing is uploaded.
       const cached = this.cachedManifest(set);
       if (cached !== null && changedFiles(cached, manifest).length === 0) {
-        const state = this.loadState();
-        state[set].lastPushAt = this.now();
-        this.saveState(state);
-        rmSync(workDir, { recursive: true, force: true });
-        this.setPhase(set, 'ok');
-        return { set, generation: cached.generation, uploaded: 0, bytes: 0, pruned: [] };
+        // changedFiles() sees only the local cache, so a bucket wiped by an
+        // operator or a lifecycle rule would stay "Up to date" forever while
+        // the objects are gone. Skip only while the bucket still holds this
+        // set; an empty bucket falls through to the full push below and
+        // repushes everything (self-heal).
+        const bucketHasObjects = (await this.transport.listKeys(setPrefix(this.device, set))).length > 0;
+        if (bucketHasObjects) {
+          const state = this.loadState();
+          state[set].lastPushAt = this.now();
+          this.saveState(state);
+          rmSync(workDir, { recursive: true, force: true });
+          this.setPhase(set, 'ok');
+          return { set, generation: cached.generation, uploaded: 0, bytes: 0, pruned: [] };
+        }
       }
 
       this.setPhase(set, 'uploading');
@@ -360,6 +385,8 @@ export class S3SyncManager {
       await this.transport.upload(latestTemp, latestObjectKey(this.device, set));
 
       const keys = await this.transport.listKeys(setPrefix(this.device, set));
+      // Invalid or zero → default 5: `Number('0') || 5` intentionally lands on
+      // the default rather than flooring 0 to 1 (keep=0 would mean "keep none").
       const keep = Number(this.settings.CLAUDE_MEM_S3_SYNC_KEEP_GENERATIONS) || 5;
       const stale = pruneGenerations(keys, set, keep, generation);
       for (const old of stale) {
