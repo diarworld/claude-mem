@@ -72,6 +72,10 @@ function makeManager(dir: string, transport: S3Transport, overrides: Record<stri
       dbPath: join(dir, 'claude-mem.db'),
       reviewsDbPath: join(dir, 'missing.db'),
       chromaDir: join(dir, 'chroma'),
+      // Staged pulled-db snapshots land here (the injected equivalent of
+      // paths.backups()); the boot-restore MARKER stays at the root
+      // backups/restore-pending.json the boot path reads.
+      backupsDir: join(dir, 'backups', 'auto'),
       settingsPath: join(dir, 'settings.json'),
       envPath: join(dir, '.env'),
       now: () => 1764000000000,
@@ -212,8 +216,9 @@ describe('manager pull', () => {
     expect(existsSync(join(dbIncoming, 'claude-mem.db.gz'))).toBe(true);
     expect(existsSync(join(dbIncoming, 'settings.json'))).toBe(true);
 
-    // db: gunzipped snapshot under backups/, opens, holds the pushed row
-    const stagedDb = join(dir, 'backups', `claude-mem-${dbGen}-from-s3.db`);
+    // db: gunzipped snapshot under the injected backups dir (paths.backups()
+    // equivalent = backups/auto), opens, holds the pushed row
+    const stagedDb = join(dir, 'backups', 'auto', `claude-mem-${dbGen}-from-s3.db`);
     expect(existsSync(stagedDb)).toBe(true);
     const db = new Database(stagedDb, { readonly: true });
     const rows = db.query('SELECT COUNT(*) AS n FROM observations').get() as { n: number };
@@ -283,8 +288,8 @@ describe('manager pull', () => {
     expect(db.status).toBe('pulled');
     expect(chroma.status).toBe('skipped');
     expect(chroma.reason).toMatch(/disabled/i);
-    // the db set staged normally
-    expect(existsSync(join(dir, 'backups', `claude-mem-${dbGen}-from-s3.db`))).toBe(true);
+    // the db set staged normally (into the injected backups/auto dir)
+    expect(existsSync(join(dir, 'backups', 'auto', `claude-mem-${dbGen}-from-s3.db`))).toBe(true);
     expect(readPendingRestore(join(dir, 'backups', 'restore-pending.json'))?.snapshot).toBe(`claude-mem-${dbGen}-from-s3.db`);
     // nothing was downloaded or staged for chroma
     expect(s3.order.filter(k => k.startsWith('down:claude-mem-sync/testbox/chroma/')).length).toBe(0);
@@ -323,7 +328,7 @@ describe('manager pull', () => {
 
     expect(existsSync(join(dir, 'backups', 'restore-pending.json'))).toBe(false);
     expect(existsSync(join(dir, 'backups', 'restore-chroma-pending.json'))).toBe(false);
-    const backups = readdirSync(join(dir, 'backups'));
+    const backups = existsSync(join(dir, 'backups', 'auto')) ? readdirSync(join(dir, 'backups', 'auto')) : [];
     expect(backups.filter(name => /^claude-mem-.*-from-s3\.db(\.partial)?$/.test(name)).length).toBe(0);
     // the incoming landing zone was cleaned up
     const incomingRoot = join(dir, 'backups', 's3sync-incoming');
@@ -378,5 +383,30 @@ describe('manager pull', () => {
     // the rejected call staged nothing new
     expect(readPendingRestore(join(dir, 'backups', 'restore-pending.json'))?.snapshot)
       .toBe(`claude-mem-${dbGen}-from-s3.db`);
+  });
+
+  test('the backupsDir option defaults to paths.backups() (backups/auto), where boot restore searches', () => {
+    isolated = isolate();
+    const dir = isolated.dir;
+    // Regression pin (live-bucket smoke bug): with the backupsDir OPTION
+    // absent the field must resolve to paths.backups() — the directory
+    // applyPendingRestore searches at boot — never the backups/ parent.
+    // Constructed with dataDir injected (so loadState stays in the temp dir)
+    // but without backupsDir; the private field is read via `as any`.
+    // The live-bucket smoke remains the integration guard that boot actually
+    // finds the staged file there.
+    const manager = new S3SyncManager(
+      { CLAUDE_MEM_S3_SYNC_ENABLED: 'true', CLAUDE_MEM_S3_SYNC_BUCKET: 'bucket' },
+      {
+        dataDir: dir,
+        dbPath: join(dir, 'claude-mem.db'),
+        chromaDir: join(dir, 'chroma'),
+        settingsPath: join(dir, 'settings.json'),
+        envPath: join(dir, '.env'),
+        stateDir: join(dir, 'state'),
+      },
+    );
+    expect((manager as any).backupsDir).toBe(paths.backups());
+    expect(paths.backups().endsWith(join('backups', 'auto'))).toBe(true);
   });
 });

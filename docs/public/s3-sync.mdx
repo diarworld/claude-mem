@@ -155,8 +155,10 @@ The bucket layout is **per device** — `claude-mem-sync/<device>/…` — and
    pending-restore swap, and the staged chroma index is swapped in by a
    boot-time directory swap. The previous chroma directory is kept as
    `chroma-pre-restore-<ts>` (newest 2 are kept). Pulled db snapshots land in
-   `backups/` as `claude-mem-<generation>-from-s3.db`. To roll a chroma swap
-   back manually: stop the worker and rename the newest
+   `backups/auto/` (BackupManager's snapshot folder) as
+   `claude-mem-<generation>-from-s3.db`, where they participate in backup
+   retention and are listed by `claude-mem backup status` / `backup list`. To
+   roll a chroma swap back manually: stop the worker and rename the newest
    `chroma-pre-restore-<ts>` directory back to `chroma`.
 
 <Warning>

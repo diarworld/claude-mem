@@ -42,6 +42,11 @@ export interface S3SyncManagerOptions {
   dbPath?: string;
   reviewsDbPath?: string;
   chromaDir?: string;
+  /** Where staged pulled-db snapshots are written. MUST be the directory
+   * applyPendingRestore searches at boot (paths.backups() = backups/auto,
+   * BackupManager's auto-snapshot nest), or the boot restore never finds the
+   * file. Defaults to paths.backups(). */
+  backupsDir?: string;
   settingsPath?: string;
   envPath?: string;
   stateDir?: string;
@@ -116,6 +121,7 @@ export class S3SyncManager {
   private readonly dbPath: string;
   private readonly reviewsDbPath: string;
   private readonly chromaDir: string;
+  private readonly backupsDir: string;
   private readonly settingsPath: string;
   private readonly envPath: string;
   private readonly stateDir: string;
@@ -147,6 +153,13 @@ export class S3SyncManager {
     this.dbPath = options.dbPath ?? paths.database();
     this.reviewsDbPath = options.reviewsDbPath ?? path.join(this.dataDir, 'work-view-reviews.db');
     this.chromaDir = options.chromaDir ?? paths.chroma();
+    // The boot restore (applyPendingRestore) searches exactly paths.backups()
+    // (= <dataDir>/backups/auto, BackupManager's auto-snapshot nest) for the
+    // staged snapshot, so a pulled db MUST land there — a snapshot elsewhere
+    // makes boot report "snapshot not found" and start unchanged (live-bucket
+    // smoke bug). Pulled snapshots therefore participate in BackupManager's
+    // retention and are listed as restorable snapshots.
+    this.backupsDir = options.backupsDir ?? paths.backups();
     this.settingsPath = options.settingsPath ?? USER_SETTINGS_PATH;
     this.envPath = options.envPath ?? paths.envFile();
     this.stateDir = options.stateDir ?? path.join(this.dataDir, 'state');
@@ -691,12 +704,17 @@ export class S3SyncManager {
     }
   }
 
-  /** Gunzip the verified db into backups/ and stage the boot-time restore. Live settings/env are never touched — sidecars only. */
+  /** Gunzip the verified db into the backups dir and stage the boot-time restore. Live settings/env are never touched — sidecars only. */
   private async stageDbPull(generation: string, manifest: S3SyncManifest, incomingDir: string): Promise<S3SyncPullSetResult> {
     const files = manifest.files;
     const dbGz = files.find(file => file.key === 'claude-mem.db.gz');
     if (!dbGz) throw new Error(`db manifest has no claude-mem.db.gz: ${generation}`);
-    const backupsDir = path.join(this.dataDir, 'backups');
+    // this.backupsDir MUST be the directory applyPendingRestore searches at
+    // boot (paths.backups() = <dataDir>/backups/auto — BackupManager's
+    // auto-snapshot nest), so the staged file is found and applied, and
+    // participates in BackupManager's retention/listing. Never derive it as
+    // <dataDir>/backups — that is the parent, not the search root.
+    const backupsDir = this.backupsDir;
     mkdirSync(backupsDir, { recursive: true });
     const stagedName = `claude-mem-${generation}-from-s3.db`;
     const stagedPath = path.join(backupsDir, stagedName);
@@ -721,7 +739,11 @@ export class S3SyncManager {
       }
       throw error;
     }
-    stagePendingRestore(stagedName, path.join(backupsDir, 'restore-pending.json'));
+    // The marker path must NOT follow backupsDir: boot reads exactly
+    // paths.pendingRestore() = <dataDir>/backups/restore-pending.json, while
+    // backupsDir is backups/auto. (Equals paths.pendingRestore() in
+    // production; tests inject the temp-dir root.)
+    stagePendingRestore(stagedName, path.join(this.dataDir, 'backups', 'restore-pending.json'));
 
     for (const [key, sidecarName] of [['settings.json', 'settings.json.bak-s3sync'], ['env', '.env.bak-s3sync']] as const) {
       if (!files.some(file => file.key === key)) continue;
