@@ -45,9 +45,12 @@ in `src/build/hook-shell-template.ts` — keep in lockstep). After any install:
 - if both `16.1.5` and `16.1.5-ru.N` exist in the plugin cache, the plain one
   wins and will silently serve old code. Remove the stale plain directory or
   pin with `CLAUDE_MEM_WORKER_SCRIPT_PATH`;
-- minimum version for this runbook: `16.1.5-ru.4` (S3 Sync v2 + the setup-page
-  integrations step). Earlier ru versions lack the merge pipeline; plain
-  `16.1.5` from the public registry lacks S3 Sync entirely.
+- minimum version for this runbook: `16.1.5-ru.4` (S3 Sync v2: the merge
+  pipeline, `/api/s3sync/*`). The setup page's integrations blocks and
+  `POST /api/setup/integrations` landed in `b4354667c` and are NOT in any
+  published version yet — configure such installs through `settings.json` and
+  `~/.claude-mem/.env` directly (step 3's file path), or publish a version
+  containing it first.
 
 If the setup wizard is still pending after install (its terminal flow needs a
 real TTY; an agent usually has none), finish it through the local worker's page
@@ -59,20 +62,15 @@ The gateway key is `CLAUDE_MEM_OPENROUTER_API_KEY` in `~/.claude-mem/settings.js
 (the provider is OpenRouter-shaped; the base URL points at the internal
 GPUStack). Either:
 
-- **Setup page** (worker running, port 37778): open `http://localhost:37778/?setup=1`,
-  go to the storage-choice step, type the key into *Integrations → Internal
-  model gateway*, press *Use this computer*. Endpoint and model are filled
-  automatically when they are still empty (`https://gpustack.data.lmru.tech/v1`,
-  `glm-5.3-flash`) — a value this machine already chose is never overwritten.
-- **Programmatically** (what an agent does):
-
-```bash
-curl -s -X POST http://localhost:37778/api/setup/integrations \
-  -H 'Content-Type: application/json' \
-  -d '{"gpuStackApiKey":"<key>","gpuStackEndpoint":"https://gpustack.data.lmru.tech/v1"}'
-```
-
-The endpoint is loopback-only; run the curl on the second computer itself.
+- **Setup page** (worker running, port 37778) — only on a version that contains
+  `b4354667c`: open `http://localhost:37778/?setup=1`, go to the storage-choice
+  step, type the key into *Integrations → Internal model gateway*, press *Use
+  this computer*. Endpoint and model are filled automatically when they are
+  still empty (`https://gpustack.data.lmru.tech/v1`, `glm-5.3-flash`) — a value
+  this machine already chose is never overwritten.
+- **settings.json directly** (works on `16.1.5-ru.4`): set `CLAUDE_MEM_PROVIDER: "openrouter"`,
+  `CLAUDE_MEM_OPENROUTER_BASE_URL`, `CLAUDE_MEM_OPENROUTER_MODEL` and the key,
+  with the worker stopped; it re-reads settings on start.
 
 Verify: the answer is the integrations view itself — `openRouterKeyMasked`
 shows the key's last four characters — and `~/.claude-mem/settings.json` holds
@@ -82,7 +80,9 @@ lines).
 
 ## 3. Enable S3 Sync
 
-The same integrations block carries the S3 Sync settings. Needed values:
+The same integrations block carries the S3 Sync settings (setup page, versions
+with `b4354667c`) — or set them in the files directly, which works on
+`16.1.5-ru.4`. Needed values:
 
 - endpoint and region: the shipped defaults are Yandex Object Storage
   (`https://storage.yandexcloud.net`, `ru-central1`); copy the first computer's
@@ -94,16 +94,21 @@ The same integrations block carries the S3 Sync settings. Needed values:
   `S3_SYNC_SECRET_ACCESS_KEY` — copy those two values.
 
 ```bash
+# File path (works on 16.1.5-ru.4), with the worker stopped:
+#   settings.json:  CLAUDE_MEM_S3_SYNC_ENABLED "true", _ENDPOINT, _BUCKET, _REGION
+#   .env:           S3_SYNC_ACCESS_KEY_ID=... , S3_SYNC_SECRET_ACCESS_KEY=...
+#
+# HTTP path (versions with b4354667c only):
 curl -s -X POST http://localhost:37778/api/setup/integrations \
   -H 'Content-Type: application/json' \
   -d '{"s3Sync":{"enabled":true,"endpoint":"https://storage.yandexcloud.net","bucket":"<bucket>","region":"ru-central1","accessKeyId":"<key id>","secretAccessKey":"<secret>"}}'
 ```
 
-The worker refuses an enable without credentials (they are neither submitted
-nor already in `.env`) with HTTP 400 — that refusal is the check, not a bug.
-On success the manager starts immediately; no worker restart is needed
-(`DatabaseManager.ensureS3SyncManager` picks the new settings up). The
-credentials land in `~/.claude-mem/.env` (mode 0600), the settings in
+The HTTP path refuses an enable without credentials (they are neither
+submitted nor already in `.env`) with HTTP 400 — that refusal is the check,
+not a bug. On success the manager starts immediately; no worker restart is
+needed. The file path applies on the next worker start. The credentials land
+in `~/.claude-mem/.env` (mode 0600), the settings in
 `~/.claude-mem/settings.json`.
 
 If the setup wizard is mid-flight (install status not `ready`), the
