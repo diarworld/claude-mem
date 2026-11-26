@@ -193,7 +193,7 @@ export class S3SyncManager {
     return path.join(this.s3syncDir, 'state.json');
   }
 
-  private loadState(): PersistedState {
+  private loadState(): PersistedState & { syncIdentity: string } {
     try {
       const state = parseJsonWithBom<PersistedState>(readFileSync(this.statePath(), 'utf-8'));
       if (state && state.version === 1 && state.db && state.chroma) return this.ensureSyncIdentity(state);
@@ -214,13 +214,22 @@ export class S3SyncManager {
    * against ORIGIN_DEVICE_ID_MAX_BYTES at mint — unreachable for a UUID, but
    * the guard documents the constraint SyncApply enforces downstream.
    */
-  private ensureSyncIdentity(state: PersistedState): PersistedState {
-    if (state.syncIdentity) return state;
+  private ensureSyncIdentity(state: PersistedState): PersistedState & { syncIdentity: string } {
+    // A truthy non-string (hand-edited/corrupt state) must re-mint, not leak
+    // into ops typed as a string.
+    if (typeof state.syncIdentity === 'string' && state.syncIdentity) return state as PersistedState & { syncIdentity: string };
     const syncIdentity = randomUUID();
     if (Buffer.byteLength(syncIdentity, 'utf-8') > ORIGIN_DEVICE_ID_MAX_BYTES) {
       throw new Error(`sync identity exceeds ORIGIN_DEVICE_ID_MAX_BYTES (${ORIGIN_DEVICE_ID_MAX_BYTES}): ${syncIdentity}`);
     }
-    this.saveState({ ...state, syncIdentity });
+    try {
+      this.saveState({ ...state, syncIdentity });
+    } catch (error) {
+      // First construction-time write in either manager: a silent failure
+      // would mint a new identity every boot — duplicate replica rows in the
+      // merge layer. Loud, with the cause attached.
+      throw new Error('failed to persist the S3 sync identity', { cause: error });
+    }
     return { ...state, syncIdentity };
   }
 
@@ -847,7 +856,7 @@ export class S3SyncManager {
       endpoint: this.settings.CLAUDE_MEM_S3_SYNC_ENDPOINT || 'https://storage.yandexcloud.net',
       bucket: this.settings.CLAUDE_MEM_S3_SYNC_BUCKET || '',
       device: this.device,
-      syncIdentity: persisted.syncIdentity!, // minted by loadState → ensureSyncIdentity
+      syncIdentity: persisted.syncIdentity, // loadState guarantees presence
       sets: { db: fromState('db'), chroma: fromState('chroma') },
     };
   }

@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test';
-import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { S3SyncManager } from '../../src/services/s3sync/S3SyncManager.js';
@@ -94,6 +94,42 @@ describe('s3 sync identity', () => {
     } finally {
       rmSync(otherDir, { recursive: true, force: true });
     }
+  }));
+
+  test('a pre-v2 state file (no syncIdentity) is migrated: identity minted and persisted, per-set facts preserved', withTempDir(async dir => {
+    const stateDir = join(dir, 'state', 's3sync');
+    mkdirSync(stateDir, { recursive: true });
+    writeFileSync(join(stateDir, 'state.json'), JSON.stringify({
+      version: 1,
+      db: { lastPushAt: 1764000000000, lastGeneration: '2026-11-26T01-07-44-485Z', lastError: null, lastPullAt: null },
+      chroma: { lastPushAt: 1763900000000, lastGeneration: '2026-11-25T20-00-00-000Z', lastError: 'bucket unreachable', lastPullAt: null },
+    }), 'utf-8');
+    const manager = makeManager(dir);
+    const identity = manager.status().syncIdentity;
+    expect(identity).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i);
+    const persisted = JSON.parse(readFileSync(join(stateDir, 'state.json'), 'utf-8')) as { syncIdentity?: string; db: { lastGeneration: string | null }; chroma: { lastError: string | null } };
+    expect(persisted.syncIdentity).toBe(identity);
+    expect(persisted.db.lastGeneration).toBe('2026-11-26T01-07-44-485Z');
+    expect(persisted.chroma.lastError).toBe('bucket unreachable');
+    expect(persisted.chroma.lastGeneration).toBe('2026-11-25T20-00-00-000Z');
+    const status = manager.status();
+    expect(status.sets.db.phase).toBe('ok');
+    expect(status.sets.chroma.phase).toBe('error');
+    await manager.stop();
+  }));
+
+  test('a corrupt non-string syncIdentity re-mints instead of leaking into status', withTempDir(async dir => {
+    const stateDir = join(dir, 'state', 's3sync');
+    mkdirSync(stateDir, { recursive: true });
+    writeFileSync(join(stateDir, 'state.json'), JSON.stringify({
+      version: 1,
+      db: { lastPushAt: null, lastGeneration: null, lastError: null, lastPullAt: null },
+      chroma: { lastPushAt: null, lastGeneration: null, lastError: null, lastPullAt: null },
+      syncIdentity: 123,
+    }), 'utf-8');
+    const manager = makeManager(dir);
+    expect(manager.status().syncIdentity).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i);
+    await manager.stop();
   }));
 
   test('the identity is written to the persisted state file', withTempDir(dir => {
