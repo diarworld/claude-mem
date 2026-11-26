@@ -57,6 +57,7 @@ export type Component =
   | 'SESSION'
   | 'SETTINGS'
   | 'SHUTDOWN'
+  | 'S3SYNC'
   | 'SYNC_APPLY'
   | 'SYNC_CLIENT'
   | 'SYSTEM'

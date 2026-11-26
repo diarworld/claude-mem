@@ -490,6 +490,11 @@ var init_paths = __esm({
       // A restore staged by `npx claude-mem restore`, applied by the next worker
       // boot before it opens the database, and the outcome of the last one.
       pendingRestore: () => join5(DATA_DIR, "backups", "restore-pending.json"),
+      // A chroma directory restore staged by an S3 Sync pull, applied at boot
+      // right after the database restore and before the vector store opens.
+      pendingChromaRestore: () => join5(DATA_DIR, "backups", "restore-chroma-pending.json"),
+      // Landing zone for files an S3 Sync pull downloads before they verify.
+      s3syncIncoming: () => join5(DATA_DIR, "backups", "s3sync-incoming"),
       lastRestore: () => join5(DATA_DIR, "backups", "last-restore.json"),
       chroma: () => join5(DATA_DIR, "chroma"),
       combinedCerts: () => join5(DATA_DIR, "combined_certs.pem"),
@@ -1403,6 +1408,23 @@ var init_SettingsDefaultsManager = __esm({
         // Snapshot cadence in hours
         CLAUDE_MEM_BACKUP_RETAIN_COUNT: "7",
         // Keep the N most-recent snapshots
+        // S3 Sync. Off by default; opt-in. Credentials are not here: they live in
+        // .env as S3_SYNC_ACCESS_KEY_ID / S3_SYNC_SECRET_ACCESS_KEY (EnvManager whitelist).
+        CLAUDE_MEM_S3_SYNC_ENABLED: "false",
+        CLAUDE_MEM_S3_SYNC_ENDPOINT: "https://storage.yandexcloud.net",
+        CLAUDE_MEM_S3_SYNC_BUCKET: "",
+        CLAUDE_MEM_S3_SYNC_REGION: "ru-central1",
+        CLAUDE_MEM_S3_SYNC_DB_INTERVAL_HOURS: "6",
+        // DB+config set cadence in hours
+        CLAUDE_MEM_S3_SYNC_CHROMA_INTERVAL_HOURS: "24",
+        // chroma vector index cadence in hours
+        CLAUDE_MEM_S3_SYNC_KEEP_GENERATIONS: "5",
+        // generations kept per set in the bucket
+        CLAUDE_MEM_S3_SYNC_INCLUDE_ENV: "true",
+        // .env travels with the db set (plaintext, private bucket)
+        CLAUDE_MEM_S3_SYNC_INCLUDE_CHROMA: "true",
+        CLAUDE_MEM_S3_SYNC_DEVICE: "",
+        // bucket prefix; empty = os.hostname()
         CLAUDE_MEM_TELEGRAM_ENABLED: "true",
         CLAUDE_MEM_TELEGRAM_BOT_TOKEN: "",
         CLAUDE_MEM_TELEGRAM_CHAT_ID: "",
@@ -4597,7 +4619,9 @@ var init_EnvManager = __esm({
       "OPENROUTER_API_KEYS",
       "OPENAI_COMPAT_API_KEY",
       "OPENAI_COMPAT_API_KEYS",
-      "CLAUDE_CODE_OAUTH_TOKEN"
+      "CLAUDE_CODE_OAUTH_TOKEN",
+      "S3_SYNC_ACCESS_KEY_ID",
+      "S3_SYNC_SECRET_ACCESS_KEY"
     ];
   }
 });

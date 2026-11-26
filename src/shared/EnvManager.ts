@@ -84,6 +84,9 @@ const BLOCKED_ENV_VARS = [
   // chain sanitizeEnv.
   'CLAUDE_CODE_EFFORT_LEVEL',
   'CLAUDE_CODE_ALWAYS_ENABLE_EFFORT',
+  'S3_SYNC_ACCESS_KEY_ID',     // S3 Sync bucket credentials: read by claude-mem only via
+  'S3_SYNC_SECRET_ACCESS_KEY', // loadClaudeMemEnv. A shell-exported copy must never reach
+                               // SDK children or their tool subprocesses.
 ];
 
 const MODEL_OVERRIDE_ENV_VAR = /^ANTHROPIC_(?:MODEL|SMALL_FAST_MODEL|DEFAULT_(?:[A-Z0-9]+_)?MODEL)(?:_(?:NAME|DESCRIPTION|SUPPORTED_CAPABILITIES))?$/;
@@ -102,6 +105,9 @@ export interface ClaudeMemEnv {
   OPENAI_COMPAT_API_KEYS?: string;
   /** Long-lived token from `claude setup-token`; injected only on the Claude OAuth path (buildIsolatedEnvWithFreshOAuth), ahead of the credential store. */
   CLAUDE_CODE_OAUTH_TOKEN?: string;
+  /** S3 Sync (S3SyncManager): long-lived bucket credentials. Read in-process by the worker; never passed to SDK children (excluded in buildIsolatedEnv). */
+  S3_SYNC_ACCESS_KEY_ID?: string;
+  S3_SYNC_SECRET_ACCESS_KEY?: string;
 }
 
 /**
@@ -129,6 +135,8 @@ const CREDENTIAL_KEYS = [
   'OPENAI_COMPAT_API_KEY',
   'OPENAI_COMPAT_API_KEYS',
   'CLAUDE_CODE_OAUTH_TOKEN',
+  'S3_SYNC_ACCESS_KEY_ID',
+  'S3_SYNC_SECRET_ACCESS_KEY',
 ] as const;
 
 // Node's stdlib .env parser (util.parseEnv, Node ≥20.12 / stable in 24):
@@ -362,7 +370,15 @@ export function buildIsolatedEnv(includeCredentials: boolean = true): Record<str
       const value = credentials[key];
       // Injected only by buildIsolatedEnvWithFreshOAuth: the fallback key as ANTHROPIC_API_KEY on a
       // quota-fallback run, the OAuth token on the Claude OAuth path (never toward a gateway).
-      if (value && key !== 'ANTHROPIC_FALLBACK_API_KEY' && key !== 'CLAUDE_CODE_OAUTH_TOKEN') isolatedEnv[key] = value;
+      // S3_SYNC_* are excluded outright: the bucket credentials are read in-process by S3SyncManager
+      // (loadClaudeMemEnv) and must never reach SDK children or their tool subprocesses.
+      if (
+        value &&
+        key !== 'ANTHROPIC_FALLBACK_API_KEY' &&
+        key !== 'CLAUDE_CODE_OAUTH_TOKEN' &&
+        key !== 'S3_SYNC_ACCESS_KEY_ID' &&
+        key !== 'S3_SYNC_SECRET_ACCESS_KEY'
+      ) isolatedEnv[key] = value;
     }
 
     // Note: CLAUDE_CODE_OAUTH_TOKEN is intentionally NOT copied from

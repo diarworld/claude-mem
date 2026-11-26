@@ -77,3 +77,29 @@ export function readLastRestoreResult(resultPath = paths.lastRestore()): LastRes
   if (!existsSync(resultPath)) return null;
   return parseJsonWithBom<LastRestoreResult>(readFileSync(resultPath, 'utf-8'));
 }
+
+export interface PendingChromaRestore {
+  /** Absolute staging dir holding the verified chroma tree to swap in. */
+  stagingDir: string;
+  requestedAt: number;
+  pairedDbGeneration?: string;
+}
+
+export function stagePendingChromaRestore(stagingDir: string, pairedDbGeneration?: string, markerPath = paths.pendingChromaRestore()): void {
+  const pending: PendingChromaRestore = { stagingDir, requestedAt: Date.now(), pairedDbGeneration };
+  writeJsonFileAtomic(markerPath, pending, { mode: 0o600 });
+}
+
+/** The staged chroma restore, or null when none is staged. Throws on a corrupt marker. */
+export function readPendingChromaRestore(markerPath = paths.pendingChromaRestore()): PendingChromaRestore | null {
+  if (!existsSync(markerPath)) return null;
+  const parsed = parseJsonWithBom<Partial<PendingChromaRestore>>(readFileSync(markerPath, 'utf-8'));
+  if (typeof parsed?.stagingDir !== 'string' || parsed.stagingDir === '') {
+    throw new Error(`chroma restore marker has no staging dir: ${markerPath}`);
+  }
+  return { stagingDir: parsed.stagingDir, requestedAt: Number(parsed.requestedAt) || 0, pairedDbGeneration: parsed.pairedDbGeneration };
+}
+
+export function clearPendingChromaRestore(markerPath = paths.pendingChromaRestore()): void {
+  if (existsSync(markerPath)) unlinkSync(markerPath);
+}
