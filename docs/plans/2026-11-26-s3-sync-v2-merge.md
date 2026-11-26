@@ -157,7 +157,7 @@ Implementer subagent → spec reviewer (does the diff match the task text?) → 
 ### Task 10: Full verification + push + merge
 
 **Steps:**
-1. `bun test tests/infrastructure/s3-sync-*.test.ts` → all pass. 2. `npm run test:infra` → compare failures against the v1 baseline (17 known Windows/environment fails recorded in the session; anything NEW is a regression — investigate, never wave off). 3. `bun test tests/backup/` → 0 fail. 4. `npm run typecheck` → 0. 5. `npm run build` + commit regenerated `plugin/` bundles. 6. Live smoke (controller, this machine + second computer): enable merge on both, push from each, observe cross-device convergence in `s3sync status` and the viewer popover. 7. `git push fork feat/s3-sync-v2`. 8. Merge `--no-ff` into fork/main from the `claude-mem-maincheck` worktree (it holds main), push.
+1. `bun test tests/infrastructure/s3-sync-*.test.ts` → all pass. 1b. `npm run test:infra` → compare failures against the v1 baseline (16–17 known Windows/environment fails recorded in the session; anything NEW is a regression — investigate, never wave off). 2. `bun test tests/backup/` → 0 fail. 3. `npm run typecheck` → 0 (now includes the permanent `typecheck:my-work` gate — the root tsconfig excludes `src/ui/my-work`; added in Task 10 per the Task 7 quality review). 4. `npm run build` + commit regenerated `plugin/` bundles. 5. Live smoke (controller, this machine + second computer): enable merge on both, push from each, observe cross-device convergence in `s3sync status` and the viewer popover. 6. `git push fork feat/s3-sync-v2`. 7. Merge `--no-ff` into fork/main from the `claude-mem-maincheck` worktree (it holds main), push.
 
 ---
 
