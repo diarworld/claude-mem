@@ -477,6 +477,7 @@ const LIVE_CHIP_WORDS: Record<LiveChipProblem, { words: string; tone: Exclude<Co
   'feed-reconnecting': { words: 'Reconnecting', tone: 'warning' },
   'feed-connecting': { words: 'Connecting', tone: 'neutral' },
   'sharing-refused': { words: 'Sharing problem', tone: 'warning' },
+  'memory-error': { words: 'Merge error', tone: 'warning' },
   'cloud-behind': { words: 'Cloud behind', tone: 'warning' },
 }
 
@@ -558,7 +559,8 @@ export function LiveIndicator() {
   // change on every poll ("Changes remaining: 1234."), so they stay in the popover's Details: a change is heard once.
   const problemLabel = source === 'feed' ? t(connection.label)
     : source === 'sharing' && shared ? t(shared.label)
-      : source === 'cloud' && sync ? t(sync.label) : null
+      : source === 'memory' && connection.s3 ? t(connection.s3.label)
+        : source === 'cloud' && sync ? t(sync.label) : null
   const announcement = chip ? [t(chip.words), problemLabel].filter(Boolean).join('. ') : t('Live')
   const servedFromCloud = isServedFromCloud(window.location.hostname)
   return (
@@ -590,7 +592,29 @@ export function LiveIndicator() {
                   {t(connection.label)}
                   {connection.lastSuccessfulCheckAt && <> · {sentenceWith(t('checked {time}'), 'time', <LocalTime iso={connection.lastSuccessfulCheckAt} />)}</>}
                 </StatusRow>
-                {sync && <StatusRow title={t('Cloud copy')} tone={sync.tone} mark={sync.tone === 'warning' ? <CloudAlertIcon className="size-4" /> : <CloudIcon className="size-4" />}>{t(sync.label)}</StatusRow>}
+                {connection.s3 ? (() => {
+                  // The truthful sync row (S3 Sync v2): when the S3 merge
+                  // dimension is present it IS the sync story, so it replaces
+                  // the Cloud copy row entirely — "cloud sync is disabled" has
+                  // no row to appear in. The stale row's time is the last
+                  // merge-tick ACTIVITY, never called a merge.
+                  const s3 = connection.s3
+                  const count = s3.mergedPeers?.length
+                  const countWords = count === undefined ? null : `${count} ${count === 1 ? t('machine') : t('machines')}`
+                  return (
+                    <StatusRow title={t('Memory sync')} tone={s3.tone}
+                      mark={s3.tone === 'warning' ? <CloudAlertIcon className="size-4" /> : <CloudIcon className="size-4" />}>
+                      {t(s3.label)}
+                      {s3.state === 'stale' && s3.mergedPeers === null && <> · {t('no devices found yet')}</>}
+                      {s3.state !== 'error' && countWords && <> · {countWords}</>}
+                      {/* In 'current' the time is when the latest merge happened; in 'stale' and 'error' it is
+                          the merge tick's last activity (a skip, or the error) — never called a merge. */}
+                      {s3.lastMergeAt !== null && <> · {sentenceWith(t(s3.state === 'current' ? 'merged {time}' : 'last activity {time}'),
+                        'time', <LocalTime iso={new Date(s3.lastMergeAt).toISOString()} />)}</>}
+                    </StatusRow>
+                  )
+                })()
+                : sync && <StatusRow title={t('Cloud copy')} tone={sync.tone} mark={sync.tone === 'warning' ? <CloudAlertIcon className="size-4" /> : <CloudIcon className="size-4" />}>{t(sync.label)}</StatusRow>}
                 {shared && <StatusRow title={t('My Work sharing')} tone={shared.attention ? 'warning' : 'neutral'} mark={<Share2Icon className="size-4" />}>{t(shared.label)}</StatusRow>}
               </dl>
               <Collapsible>
@@ -600,6 +624,7 @@ export function LiveIndicator() {
                   {connection.activityCheckedAt && <p>{sentenceWith(t('Activity last inspected {time}'), 'time', <LocalTime iso={connection.activityCheckedAt} />)}</p>}
                   {connection.clockSkew && <p>{t('Source and browser clocks differ; freshness uses received heartbeats.')}</p>}
                   {sync && <p data-sync-detail="">{syncDetailWords(sync, t)}</p>}
+                  {connection.s3?.lastError && <p data-sync-detail="s3">{connection.s3.lastError}</p>}
                   {shared && <p>{t(shared.detail)}</p>}
                 </CollapsibleContent>
               </Collapsible>

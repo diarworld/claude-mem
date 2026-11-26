@@ -46,6 +46,30 @@ describe('the Live chip', () => {
     assert.equal(liveChipProblem(behind, REFUSED), 'sharing-refused')
   })
 
+  it('names a memory-sync merge error after refused sharing, before the cloud copy', () => {
+    const memoryError = { ...sync('current'), s3: { state: 'error', lastMergeAt: NOW, mergedPeers: ['device-a'], lastError: 'boom' } }
+    assert.equal(liveChipProblem(connection({ sync: memoryError, syncReceivedAt: NOW }), FINE), 'memory-error')
+    // A merge error outranks the cloud copy falling behind: the Memory sync row
+    // is the row the person reads when it is present.
+    assert.equal(liveChipProblem(connection({ sync: memoryError, syncReceivedAt: NOW }), FINE), 'memory-error' as const)
+    const bothBehind = { ...sync('offline'), s3: { state: 'error', lastMergeAt: NOW, mergedPeers: null, lastError: 'boom' } }
+    assert.equal(liveChipProblem(connection({ sync: bothBehind, syncReceivedAt: NOW }), FINE), 'memory-error')
+  })
+
+  it('memory sync that is current or stale is never a chip problem — stale is a steady, explainable state', () => {
+    assert.equal(liveChipProblem(connection({ sync: { ...sync('current'),
+      s3: { state: 'current', lastMergeAt: NOW, mergedPeers: ['device-a'], lastError: null } }, syncReceivedAt: NOW }), FINE), null)
+    assert.equal(liveChipProblem(connection({ sync: { ...sync('unconfigured'), configured: false,
+      s3: { state: 'stale', lastMergeAt: NOW, mergedPeers: null, lastError: null } } }), null), null,
+      's3 waiting for its first merge beside a cloud that is off is not a problem')
+  })
+
+  it('without an s3 dimension the chip behaves exactly as today', () => {
+    assert.equal(liveChipProblem(connection({ sync: sync('catching-up'), syncReceivedAt: NOW }), FINE), 'cloud-behind')
+    assert.equal(liveChipProblem(connection({ sync: sync('current'), syncReceivedAt: NOW }), FINE), null)
+    assert.equal(liveChipProblem(connection({ sync: { ...sync('unconfigured'), configured: false } }), null), null)
+  })
+
   it('puts the page’s own feed first: without it nothing on screen is current', () => {
     const cloudBehind = { sync: sync('offline'), syncReceivedAt: NOW }
     assert.equal(liveChipProblem(connection({ ...cloudBehind, sourceConnected: false }), REFUSED), 'feed-unavailable')
@@ -77,6 +101,8 @@ describe('the Live chip', () => {
       liveChipProblem(connection({ transportConnected: false, lastEventAt: null }), null),
       liveChipProblem(connection({}), REFUSED),
       liveChipProblem(connection({ sync: sync('stale'), syncReceivedAt: NOW }), null),
+      liveChipProblem(connection({ sync: { ...sync('current'),
+        s3: { state: 'error', lastMergeAt: NOW, mergedPeers: null, lastError: 'boom' } }, syncReceivedAt: NOW }), null),
     ])
     assert.deepEqual([...named].sort(), [...LIVE_CHIP_PROBLEMS].sort())
   })

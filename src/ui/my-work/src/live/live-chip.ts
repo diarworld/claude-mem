@@ -15,7 +15,7 @@ interface SharingPresentation { attention: boolean }
  * Moves: the chip has no writer of its own. Each render reads the connection and sharing state again, so whichever
  * problem applies at that moment is the one shown.
  */
-export const LIVE_CHIP_PROBLEMS = ['feed-unavailable', 'feed-stale', 'feed-reconnecting', 'feed-connecting', 'sharing-refused', 'cloud-behind'] as const
+export const LIVE_CHIP_PROBLEMS = ['feed-unavailable', 'feed-stale', 'feed-reconnecting', 'feed-connecting', 'sharing-refused', 'memory-error', 'cloud-behind'] as const
 export type LiveChipProblem = (typeof LIVE_CHIP_PROBLEMS)[number]
 
 /**
@@ -36,6 +36,12 @@ const APPLIES: Record<LiveChipProblem, (connection: ConnectionStatus, sharing: S
   'feed-reconnecting': (connection) => feedProblem(connection) === 'feed-reconnecting',
   'feed-connecting': (connection) => feedProblem(connection) === 'feed-connecting',
   'sharing-refused': (_connection, sharing) => sharing?.attention === true,
+  // An S3 merge error means the devices are not converging — the person has to
+  // look, like a refused share. It precedes 'cloud-behind' because when the
+  // Memory sync row is present it is the row the person reads. 'current' and
+  // 'stale' are never problems: stale is the steady waiting-for-the-first-merge
+  // state the popover explains.
+  'memory-error': (connection) => connection.s3?.state === 'error',
   'cloud-behind': (connection) => connection.sync?.tone === 'warning',
 }
 
@@ -44,12 +50,13 @@ export function liveChipProblem(connection: ConnectionStatus, sharing: SharingPr
   return LIVE_CHIP_PROBLEMS.find((problem) => APPLIES[problem](connection, sharing)) ?? null
 }
 
-/** Where a problem comes from: the page's feed, or the cloud and sharing state beside a feed that is live. */
-export const LIVE_CHIP_PROBLEM_SOURCE: Record<LiveChipProblem, 'feed' | 'sharing' | 'cloud'> = {
+/** Where a problem comes from: the page's feed, the memory sync across the owner's devices, or the cloud and sharing state beside a feed that is live. */
+export const LIVE_CHIP_PROBLEM_SOURCE: Record<LiveChipProblem, 'feed' | 'sharing' | 'memory' | 'cloud'> = {
   'feed-unavailable': 'feed',
   'feed-stale': 'feed',
   'feed-reconnecting': 'feed',
   'feed-connecting': 'feed',
   'sharing-refused': 'sharing',
+  'memory-error': 'memory',
   'cloud-behind': 'cloud',
 }
