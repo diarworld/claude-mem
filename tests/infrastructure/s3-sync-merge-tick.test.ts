@@ -166,7 +166,13 @@ describe('s3 sync merge tick', () => {
     // bun:sqlite readonly handles (the transformer's) finalize on GC on Windows.
     Bun.gc(true);
     for (const dir of cleanupDirs.splice(0)) {
-      rmSync(dir, { recursive: true, force: true, maxRetries: 20, retryDelay: 50 });
+      try {
+        rmSync(dir, { recursive: true, force: true, maxRetries: 20, retryDelay: 50 });
+      } catch {
+        // A cleanup hiccup under full-suite GC pressure (an OS-temp dir still
+        // held by a lazily-finalized readonly handle) is not signal — the
+        // assertions above already ran, and the OS reaps its temp dir.
+      }
     }
   });
 
