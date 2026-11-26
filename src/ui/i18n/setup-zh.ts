@@ -5,7 +5,6 @@ export const setupZh: Record<string, string> = {
   "Pick up where your last session ended.": "从上次会话结束的地方继续。",
   "Set up my agents": "设置我的智能体",
   "Show all agents": "显示所有智能体",
-  "Find your focus areas": "发现你的重点工作",
   "Your conversations are on this computer. Setup can continue with new work.": "你的对话保存在这台电脑上。你可以继续设置，从新工作开始。",
   "Nothing was uploaded: setup can continue with new work.": "没有上传任何内容。你可以继续设置，从新工作开始。",
   "Continue with new work": "从新工作开始",
@@ -44,7 +43,6 @@ export const setupZh: Record<string, string> = {
   '{count} messages': '{count} 条消息',
   'Scan progress': '扫描进度',
   'Share anonymous usage statistics to help improve your Claude-mem experience': '共享匿名使用统计数据，帮助改进您的 Claude-mem 体验',
-  'Discover your work': '发现您的工作',
   'Sending your choice…': '正在发送您的选择…',
 
   // Step 2: Reveal

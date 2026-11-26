@@ -1637,8 +1637,9 @@ export interface InstallOptions {
    * grok-bot implicit cmem default set in index.ts), `default` when the run
    * fell back to the shipped choice with no `--provider` (the internal model
    * gateway on a TTY, claude when non-interactive), `persisted` when an update or non-interactive
-   * run reused the provider already in settings, `prompt` for the interactive
-   * multiselect, `browser` for the install funnel's At Home choice. Reported on
+   * run reused the provider already in settings, `browser` for the install
+   * funnel's At Home choice. `prompt` is never assigned any more; it survives
+   * only as the `provider_source` fallback at report time. Reported on
    * install_completed as `provider_source`.
    */
   providerSource?: 'flag' | 'default' | 'persisted' | 'prompt' | 'browser';

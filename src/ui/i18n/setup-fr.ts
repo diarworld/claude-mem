@@ -5,7 +5,6 @@ export const setupFr: Record<string, string> = {
   "Pick up where your last session ended.": "Reprenez là où votre dernière session s’est arrêtée.",
   "Set up my agents": "Configurer mes agents",
   "Show all agents": "Afficher tous les agents",
-  "Find your focus areas": "Retrouvez vos priorités",
   "Your conversations are on this computer. Setup can continue with new work.": "Vos conversations sont sur cet ordinateur. Vous pouvez poursuivre la configuration avec vos prochains travaux.",
   "Nothing was uploaded: setup can continue with new work.": "Rien n’a été envoyé : vous pouvez poursuivre la configuration avec vos prochains travaux.",
   "Continue with new work": "Continuer avec de nouveaux travaux",
@@ -44,7 +43,6 @@ export const setupFr: Record<string, string> = {
   '{count} messages': '{count} messages',
   'Scan progress': 'Progression de l’analyse',
   'Share anonymous usage statistics to help improve your Claude-mem experience': 'Partagez des statistiques d’utilisation anonymes pour contribuer à améliorer votre expérience de Claude-mem',
-  'Discover your work': 'Découvrir vos activités',
   'Sending your choice…': 'Envoi de votre choix…',
 
   // Step 2: Reveal

@@ -31,8 +31,10 @@ motion skips `launch` and moves directly to `workspace`.
   for events recorded by older releases. The scan's upload offer is also gone
   (installer 16.1.5, local-only scan): the page answers the worker's upload
   hold with `upload_skipped` for everyone, and `upload_allowed` /
-  `upload_too_large` are retired with it, like the checkout-era codes before
-  them.
+  `upload_too_large` are retired with it, like the checkout-era action and
+  error codes before them: the closed schema no longer accepts them, so a
+  stale tab against an upgraded worker drops those individual events (stored
+  history was validated at its own ingestion time and is unaffected).
 - A return to a screen creates a fresh visit. A hidden tab does not.
 
 Historical version notes. `setup_funnel_version = 2` starts with installer
@@ -45,7 +47,9 @@ funnels keep validating and stay comparable:
   monthly or annual selections, and the savings screen recorded
   `action = view_hosted_plans` when someone opened the optional hosted
   generation plans. This build emits and renders none of those steps or
-  actions, but the closed schema still accepts them.
+  actions. The steps themselves still validate, but the schema rejects their
+  action and error codes, and any event still carrying the retired
+  `cloud_sync_offer` key fails the unknown-key check outright.
 - Version 1 placed `choice → savings → checkout` after Reveal and committed
   the choice on Savings. Compare releases using the version on local setup
   events. Attribute server checkout and Stripe trial outcomes by
