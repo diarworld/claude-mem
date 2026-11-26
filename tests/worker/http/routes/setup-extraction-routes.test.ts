@@ -105,15 +105,37 @@ describe('setup extraction', () => {
     scan.subscribe(state => phases.push(state.phase));
     await postScan();
     await scan.finished();
-    expect(phases).toContain('organizing');
+    // Organizing is a background field, not a phase: the scan itself is done the moment reading finished.
+    expect(phases).not.toContain('organizing');
     expect(phases).not.toContain('awaiting-consent');
-    expect(scan.state()).toMatchObject({ phase: 'done', uploadedAgents: null });
+    for (let wait = 0; scan.state().organizing?.state !== 'done' && wait < 100; wait++) await Bun.sleep(10);
+    expect(scan.state()).toMatchObject({ phase: 'done', uploadedAgents: null, organizing: { state: 'done', error: null } });
     expect(refresh.runs).toEqual(['setup-scan']);
     expect((await snapshot()).setup.extraction).toMatchObject({ agent: 'claude-code' });
   });
 
-  it('waits for explicit consent when the owner’s inference is unavailable', async () => {
+  it('finishes the scan when the owner’s inference is unavailable, and reports it in the organizing field without contacting hosted', async () => {
     const refresh = fakeRefresh();
+    let calls = 0;
+    let state: HostedIntentState = { state: 'idle', reason: 'setup-scan', step: null, agent: null, error: null, startedAt: null, finishedAt: null };
+    const hosted = {
+      state: () => state,
+      run: async () => { calls++; state = { ...state, state: 'running', step: 'goals' }; },
+    };
+    const scan = await start(refresh, null, hosted);
+    await postScan();
+    await scan.finished();
+    // The wizard never waits for organizing: with a local extractor set there is no upload question at all,
+    // and the unavailable inference lands in the organizing field of the finished scan.
+    expect(scan.state()).toMatchObject({ phase: 'done', done: true, uploadedAgents: null });
+    for (let wait = 0; scan.state().organizing?.state !== 'failed' && wait < 100; wait++) await Bun.sleep(10);
+    expect(scan.state().organizing).toMatchObject({ state: 'failed' });
+    expect(scan.state().organizing?.error).toContain('could not finish');
+    expect(calls).toBe(0);
+    expect((await snapshot()).setup.extraction).toMatchObject({ state: 'waiting-for-agent' });
+  });
+
+  it('starting a scan while the hosted upload runs joins it instead of paying for a second run', async () => {
     let complete!: () => void;
     let calls = 0;
     let state: HostedIntentState = { state: 'idle', reason: 'setup-scan', step: null, agent: null, error: null, startedAt: null, finishedAt: null };
@@ -126,7 +148,8 @@ describe('setup extraction', () => {
         state = { ...state, state: 'ok', step: null };
       },
     };
-    const scan = await start(refresh, null, hosted);
+    // No refresh worker: the scan holds for the upload choice (the only path that still asks).
+    const scan = await start(null as unknown as ReturnType<typeof fakeRefresh>, null, hosted);
     expect((await postScan()).status).toBe(202);
     await scan.finished();
     expect(scan.state()).toMatchObject({ phase: 'awaiting-consent', done: false });
@@ -135,19 +158,18 @@ describe('setup extraction', () => {
     for (let wait = 0; !complete && wait < 100; wait++) await Bun.sleep(10);
     expect(scan.state()).toMatchObject({ phase: 'uploading', done: false });
     expect((await snapshot()).setup.extraction).toMatchObject({ state: 'running' });
-    // Starting while uploading joins the existing scan, it cannot pay for a second run.
     await postScan();
     expect(calls).toBe(1);
     complete();
     for (let wait = 0; scan.state().phase !== 'done' && wait < 100; wait++) await Bun.sleep(10);
     expect(scan.state()).toMatchObject({ phase: 'done', done: true });
     expect((await snapshot()).setup.extraction).toMatchObject({ state: 'ok' });
-    expect(refresh.runs).toEqual(['setup-scan']);
   });
 
   it('keeps the hosted reason in the existing scan error slot', async () => {
     const message = 'Hosted setup failed (HTTP 413): Input exceeds the 400000-token cost cap. No prompts were truncated.';
-    const scan = await start(fakeRefresh(), null, { state: () => ({ state: 'failed', reason: 'setup-scan', step: null, agent: null, startedAt: null, finishedAt: null, error: message }), async run() { throw new Error(message); } });
+    // No refresh worker, so the consent path runs the hosted extraction after the choice.
+    const scan = await start(null as unknown as ReturnType<typeof fakeRefresh>, null, { state: () => ({ state: 'failed', reason: 'setup-scan', step: null, agent: null, startedAt: null, finishedAt: null, error: message }), async run() { throw new Error(message); } });
     await postScan();
     await scan.finished();
     await scan.confirmUpload(true);
@@ -157,7 +179,7 @@ describe('setup extraction', () => {
 
   it('passes the unchecked preference through after scanning and still completes', async () => {
     let improveProduct: boolean | undefined;
-    const scan = await start(fakeRefresh(), null, { state: () => ({ state: 'ok', reason: 'setup-scan', step: null, agent: null, startedAt: null, finishedAt: null, error: null }), async run(_prompts, flag) { improveProduct = flag; } });
+    const scan = await start(null as unknown as ReturnType<typeof fakeRefresh>, null, { state: () => ({ state: 'ok', reason: 'setup-scan', step: null, agent: null, startedAt: null, finishedAt: null, error: null }), async run(_prompts, flag) { improveProduct = flag; } });
     expect(scan.state().improveProduct).toBe(true);
     const changed = await fetch(`${origin}/api/setup/scan/preferences`, { method: 'POST', headers: { 'Content-Type': 'application/json', Origin: origin }, body: JSON.stringify({ improveProduct: false }) });
     expect(changed.status).toBe(200);

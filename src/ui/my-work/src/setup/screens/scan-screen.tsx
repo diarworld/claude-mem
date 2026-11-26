@@ -1,7 +1,7 @@
 import { ArrowRightIcon, CheckIcon } from 'lucide-react'
 import { DottedGlowBackground } from '@/components/aceternity/dotted-glow-background'
 import { interpolate, useI18n } from '@/lib/i18n'
-import { type SetupFailure, type SetupScanPhase, type SetupScanView } from '../setup-data'
+import { type SetupFailure, type SetupScanOrganizing, type SetupScanPhase, type SetupScanView } from '../setup-data'
 import { scanAgentStatus } from '../setup-scan-status'
 import { PageHeading, SetupActions, SetupButton, SetupError, ToolMark, type SetupBack } from './shared'
 
@@ -11,13 +11,22 @@ const STATUS: Record<SetupScanPhase, string | null> = {
   reading: 'Finding your recent work.',
   checking: 'Finding the context behind your work.',
   saving: 'Preparing your overview.',
-  organizing: 'Finding your focus areas with your own AI.',
   // The worker holds the scan here only to hear the upload answer, and the page answers it for
   // everyone (setup-page.tsx): the phase is momentary, so the scan keeps its running appearance.
   'awaiting-consent': null,
   uploading: 'Discovering your work, rules and focus…',
   done: 'Your scan is done. Continue to see what it found.',
   failed: null,
+}
+
+/** The refresh step's words on the live organizing line; a step a newer worker names shows as its id. */
+const ORGANIZING_STEP_WORDS: Record<string, string> = {
+  goals: 'your goals',
+  grouping: 'grouping your requests',
+  review: 'reviewing your requests',
+  titles: 'naming your requests',
+  focus: 'sorting into focus areas',
+  story: 'writing your build story',
 }
 
 /**
@@ -48,6 +57,13 @@ export function ScanScreen({ scan, back, onImproveProductChange, onConfirmUpload
   const stopped = scan.phase === 'failed'
   const count = (prompts: number) => interpolate(t('{count} messages'), { count: prompts.toLocaleString('en-US') })
   const status = STATUS[scan.phase]
+  /** The live organizing line: the step it is on, with its (done/total) when the step's batch total is known. */
+  const organizingLine = (organizing: SetupScanOrganizing) => {
+    const step = organizing.step ? t(ORGANIZING_STEP_WORDS[organizing.step] ?? organizing.step) : null
+    if (!step) return t('Organizing your recent work.')
+    if (organizing.batchTotal === null) return interpolate(t('Organizing your recent work: {step}'), { step })
+    return interpolate(t('Organizing your recent work: {step} ({done}/{total})'), { step, done: organizing.batchDone ?? 0, total: organizing.batchTotal })
+  }
   // While the scan runs the row has nothing to press forward (the page moves on by itself), so its only line is
   // Back's reason, which the bottom row words (BACK_WAIT_WORDS).
   return (
@@ -77,6 +93,12 @@ export function ScanScreen({ scan, back, onImproveProductChange, onConfirmUpload
           <span className="scan-percent tabular" aria-hidden="true">{scan.percent}%</span>
         </div>
         {status && <p className="scan-status" role="status" aria-live="polite">{t(status)}</p>}
+        {/* Organizing runs in the background after the scan is done; the wizard never waits for it. A stopped
+            organizing is a muted note, not an alert: setup is complete and My Work retries on its own schedule. */}
+        {scan.phase === 'done' && scan.organizing?.state === 'running'
+          && <p className="scan-status" role="status" aria-live="polite">{organizingLine(scan.organizing)}</p>}
+        {scan.phase === 'done' && scan.organizing?.state === 'failed'
+          && <p className="scan-status" role="status">{t('Organizing stopped. My Work will retry it.')}</p>}
         {stopped && (retryError
           ? <SetupError title={t('Couldn’t start the scan again.')} failure={retryError} />
           : <SetupError title={scan.errorKind || scan.percent === 0 ? t('The scan couldn’t start.') : t('The scan stopped.')}

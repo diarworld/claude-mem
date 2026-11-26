@@ -28,7 +28,7 @@ export class AutoRefreshWorker {
   constructor(options: {
     dir: string;
     openDatabase: () => LedgerDatabase & { close(): void };
-    runJob: (job: { needs: RefreshNeeds; reason: string }) => Promise<RefreshJobOutcome>;
+    runJob: (job: { needs: RefreshNeeds; reason: string; onProgress?: (p: { step: string; batchDone?: number; batchTotal?: number }) => void }) => Promise<RefreshJobOutcome>;
     enabled?: () => boolean;
     setupRunning?: () => boolean;
     checkMs?: number;
@@ -49,5 +49,6 @@ export class AutoRefreshWorker {
   start(): void;
   close(): void;
   check(): Promise<'closed' | 'disabled' | 'running' | 'backing-off' | 'idle' | RefreshJobOutcome['state']>;
-  runNow(options: { reason: string }): Promise<'closed' | 'setup-running' | 'running' | 'idle' | RefreshJobOutcome['state']>;
+  /** On-demand run; onProgress (the setup scan's background organizing listener) rides into the job. */
+  runNow(options: { reason: string; onProgress?: (p: { step: string; batchDone?: number; batchTotal?: number }) => void }): Promise<'closed' | 'setup-running' | 'running' | 'idle' | RefreshJobOutcome['state']>;
 }

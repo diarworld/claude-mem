@@ -46,8 +46,10 @@ export class AutoRefreshWorker {
    * @param {object} options
    * @param {string} options.dir                ledger folder (~/.claude-mem/work-view)
    * @param {() => any} options.openDatabase    read-only claude-mem.db handle with close()
-   * @param {(job: {needs: object, reason: string}) => Promise<{state: string, agent: string|null, result: string|null, error: string|null}>} options.runJob
-   *   runs the job on the first logged-in agent; 'waiting-for-agent' when there is none yet (agent-runner/run.ts)
+   * @param {(job: {needs: object, reason: string, onProgress?: (p: {step: string, batchDone?: number, batchTotal?: number}) => void}) => Promise<{state: string, agent: string|null, result: string|null, error: string|null}>} options.runJob
+   *   runs the job on the first logged-in agent; 'waiting-for-agent' when there is none yet (agent-runner/run.ts).
+   *   onProgress is passed only from runNow: the setup scan's background organizing reads it, and the scheduled
+   *   check has no listener to report to.
    * @param {() => boolean} [options.enabled]   scheduled refresh on: setup not running and CLAUDE_MEM_WORK_VIEW_AUTO_REFRESH, read on every check
    * @param {() => boolean} [options.setupRunning]  setup is running, so no refresh may spend tokens, not even one the owner asks for
    * @param {() => string} options.localDeviceId the worker's sync device id ('' when cloud sync never started), so my-focus
@@ -168,8 +170,11 @@ export class AutoRefreshWorker {
     return this.run(needs, 'scheduled');
   }
 
-  /** The explicit setup scan may run its own extraction. Other on-demand work waits until setup finishes. */
-  async runNow({ reason }) {
+  /**
+   * The explicit setup scan may run its own extraction. Other on-demand work waits until setup finishes.
+   * onProgress, when given, rides into the job: the setup scan's background organizing surfaces each step.
+   */
+  async runNow({ reason, onProgress }) {
     if (this.closed) return 'closed';
     if (this.busy) return 'running';
     if (reason !== 'setup-scan' && this.setupRunning()) return 'setup-running';
@@ -193,11 +198,11 @@ export class AutoRefreshWorker {
       }
       // A re-scan that found nothing new starts no agent.
       if (!needs.needed) return 'idle';
-      return await this.run(needs, reason);
+      return await this.run(needs, reason, onProgress);
     } finally { this.busy = false; }
   }
 
-  async run(needs, reason) {
+  async run(needs, reason, onProgress) {
     this.busy = true;
     try {
       // With no logged-in agent yet the job says 'waiting-for-agent', and the next ten-minute check tries again.
@@ -206,7 +211,7 @@ export class AutoRefreshWorker {
       this.write({ state: 'running', pid: process.pid, reason, startedAt, needs, nextAt: null });
       this.log('info', `Work view refresh started (${reason})`, { needs });
       let outcome;
-      try { outcome = await this.runJob({ needs, reason }); }
+      try { outcome = await this.runJob({ needs, reason, ...(onProgress ? { onProgress } : {}) }); }
       catch (error) { outcome = { state: 'failed', agent: null, result: null, error: String(error?.message ?? error).slice(0, 500) }; }
       const finishedAt = this.iso();
       const failures = outcome.state === 'failed' ? previousFailures + 1 : 0;

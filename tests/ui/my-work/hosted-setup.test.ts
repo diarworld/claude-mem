@@ -260,9 +260,28 @@ describe('local-only setup scan control', () => {
 
   it('names no cmem.ai upload anywhere on the scan, whatever its phase', () => {
     const app = fixture();
-    for (const phase of ['idle', 'reading', 'checking', 'saving', 'organizing', 'awaiting-consent', 'uploading', 'done']) {
+    for (const phase of ['idle', 'reading', 'checking', 'saving', 'awaiting-consent', 'uploading', 'done']) {
       expect(app.renderScan(scan({ phase, agents: [{ id: 'codex', label: 'Codex', detected: true, prompts: 3 }] })), phase).not.toContain('cmem.ai');
     }
+  });
+
+  it('shows the background organizing progress on a finished scan, and a muted note when it stopped', () => {
+    const app = fixture();
+    // The scan is done either way: organizing never blocks the wizard, so its line rides beside the done status.
+    const running = app.renderScan(scan({ phase: 'done', percent: 100, organizing: { state: 'running', step: 'review', batchDone: 3, batchTotal: 9, error: null } }));
+    expect(running).toContain('Your scan is done. Continue to see what it found.');
+    expect(running).toContain('Organizing your recent work:');
+    expect(running).toContain('reviewing your requests');
+    expect(running).toContain('(3/9)');
+    expect(running).not.toContain('role="alert"');
+    // A step with no known total shows no (done/total).
+    const noTotal = app.renderScan(scan({ phase: 'done', organizing: { state: 'running', step: 'grouping', batchDone: 2, batchTotal: null, error: null } }));
+    expect(noTotal).toContain('grouping your requests');
+    expect(noTotal).not.toMatch(/\(\d+\/\d+\)/);
+    const stopped = app.renderScan(scan({ phase: 'done', organizing: { state: 'failed', step: null, batchDone: null, batchTotal: null, error: 'The background refresh could not finish.' } }));
+    expect(stopped).toContain('Organizing stopped. My Work will retry it.');
+    expect(stopped).not.toContain('role="alert"');
+    expect(stopped).not.toContain('Try again');
   });
 
   it('shows the skipped-step message only when the person actually skipped', () => {

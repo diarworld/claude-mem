@@ -40,13 +40,14 @@ export type SetupStatus = 'pending' | 'complete';
  *                                       │                    └→ done        (the person keeps the prompts local)
  *                                       ├→ uploading → done                 (no prompts, so nothing to ask about)
  *                                       └→ done                             (no extractor is set)
- *   saving → organizing → done, or awaiting-consent if the owner's inference cannot finish
- *   reading, checking, saving, organizing, awaiting-consent, uploading → failed
+ *   saving → done (organizing, the work-view refresh, runs in the background afterwards: SetupScanState.organizing,
+ *   a field on the state, not a phase — the wizard never waits for it)
+ *   reading, checking, saving, awaiting-consent, uploading → failed
  *   done, failed → reading                                                  (the next start)
  *
  * `checking` is entered only when the transcript scan reports it.
  */
-export type SetupScanPhase = 'idle' | 'reading' | 'checking' | 'saving' | 'organizing' | 'awaiting-consent' | 'uploading' | 'done' | 'failed';
+export type SetupScanPhase = 'idle' | 'reading' | 'checking' | 'saving' | 'awaiting-consent' | 'uploading' | 'done' | 'failed';
 
 /**
  * The history upload (services/setup/history-import.ts, the only writer):

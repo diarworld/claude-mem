@@ -252,6 +252,12 @@ export interface RefreshTaskOptions {
   saveFocus?: (body: RouterFocusBody) => { placed: number; focusAreaIds: string[] } | Promise<{ placed: number; focusAreaIds: string[] }>;
   /** Owner-goals step 1: writes owner-prompts.md into the folder from every agent's transcripts (prompt importer). */
   writeOwnerPrompts?: (folder: string, sinceMinute: string | null) => Promise<OwnerPromptsFile>;
+  /**
+   * Live progress of the run's model work, reported as each unit starts (a step name, and done/total when the
+   * step's batch count is known up front). The setup scan's background organizing surfaces it; the scheduled
+   * refresh passes none. Emissions never throw (the emit helper below), and a listener must not block the run.
+   */
+  onProgress?: (progress: { step: Step; batchDone?: number; batchTotal?: number }) => void;
 }
 
 function skillPaths(pluginRoot: string) {
@@ -318,6 +324,12 @@ const focusAreasNote = (path: string) => `The focus areas already saved in My Fo
 export function buildRefreshTask(options: RefreshTaskOptions): AgentTask & { steps: StepTiming[] } {
   const { needs, reason, dataDir, ledgerDir, pluginRoot, openDatabase } = options;
   if (typeof options.localDeviceId !== 'function') throw new TypeError('buildRefreshTask needs localDeviceId, the worker\'s sync device id.');
+  // A progress listener must never break the run that reports to it (the setup scan's background organizing
+  // reads these emissions), so a throwing listener is logged and skipped.
+  const emit = (progress: { step: Step; batchDone?: number; batchTotal?: number }) => {
+    try { options.onProgress?.(progress); }
+    catch (error) { logger.warn('WORKER', 'The work-view refresh progress listener failed', { error: error instanceof Error ? error.message : String(error) }); }
+  };
   const now = options.now ?? Date.now;
   const paths = skillPaths(pluginRoot);
   const goalsFolder = join(ledgerDir, 'owner-goals', localDay(now()));
@@ -600,6 +612,8 @@ export function buildRefreshTask(options: RefreshTaskOptions): AgentTask & { ste
             }
             const processed = new Set(progress.processed);
             while (exported.sections.some(section => !processed.has(section.key))) {
+              // batchDone counts the batch about to be asked: the units started, including this one.
+              emit({ step: 'goals', batchDone: processed.size + 1, batchTotal: exported.sections.length });
               checkCurrentMappingSnapshot(progress);
               const previousPath = progress.goals ? writeInput('checked-owner-goals', progress.goals) : null;
               const batchPath = writeInput('owner-prompts-batch', '');
@@ -697,6 +711,7 @@ export function buildRefreshTask(options: RefreshTaskOptions): AgentTask & { ste
           await save({ generated_at: exportedAt, window_days: 31, human_summary: 'No owner prompts in this window.', focus_areas: [], asks: [], rules: [] }, null);
           done.push('goals empty');
         } else if (!since) {
+          emit({ step: 'goals' });
           await step('goals', initialQuestion, async answer => {
             if (typeof answer.map !== 'string' || !answer.goals || typeof answer.goals !== 'object') throw new Error('Answer needs "map" (markdown) and "goals" (object).');
             writeFileSync(join(goalsFolder, 'owner-map.md'), answer.map, { mode: 0o600 });
@@ -714,6 +729,7 @@ export function buildRefreshTask(options: RefreshTaskOptions): AgentTask & { ste
             done.push('goals unchanged');
           } else {
             const previousPath = writeInput('previous-owner-goals', previous);
+            emit({ step: 'goals' });
             await step('goals', [
               inlineSkill(paths.ownerGoalsSkill), '---', readOnly,
               `Do "Update the saved goals" yourself (no subagent). The saved goals are in ${previousPath}; the ${newPrompts} prompts the owner typed since they were saved are in ${join(goalsFolder, 'new-owner-prompts.md')}. Reply with only the updated owner-goals.json object. The worker saves it with step 3.`,
@@ -739,8 +755,11 @@ export function buildRefreshTask(options: RefreshTaskOptions): AgentTask & { ste
       // Only conversations the ledger has not decided, one project root per question, each beside
       // that root's open requests. Every batch is saved before the next is read, so a later batch
       // sees the requests an earlier one started.
-      let grouped = 0, repairedDecisions = 0;
+      let grouped = 0, repairedDecisions = 0, groupingBatches = 0;
       for (let input = cli(['grouping-input', '--days', '14']); input.conversations.length; input = cli(['grouping-input', '--days', '14'])) {
+        // The total is unknown up front (each saved batch frees its conversations for re-reading), so this
+        // step reports only how many batches have started.
+        emit({ step: 'grouping', batchDone: ++groupingBatches });
         await step('grouping', [
           requestProgress, '---', readOnly,
           // The batch is inline, with its keys named: on a file path alone Codex's light model sometimes
@@ -809,6 +828,8 @@ export function buildRefreshTask(options: RefreshTaskOptions): AgentTask & { ste
       const lane = async () => {
         while (next < batches.length) {
           const batch = batches[next++];
+          // batchDone counts the batches picked up so far, across the lanes; the total is known here.
+          emit({ step: 'review', batchDone: next, batchTotal: batches.length });
           outcomes.push(...await Promise.allSettled([timed('review', () => reviewBatch(batch, languageRule()), { groups: batch.length })]));
         }
       };
@@ -830,6 +851,7 @@ export function buildRefreshTask(options: RefreshTaskOptions): AgentTask & { ste
       try {
         const owedTitles: FocusRequestRecord[] = cli(['title-input', '--limit', '1000000']).requests;
         let named = 0, unnamed = 0;
+        if (owedTitles.length) emit({ step: 'titles' });
         for (let index = 0; index < owedTitles.length; index += TITLE_BATCH) {
           const input = { requests: owedTitles.slice(index, index + TITLE_BATCH) };
           const saved = await step('titles', [
@@ -850,6 +872,10 @@ export function buildRefreshTask(options: RefreshTaskOptions): AgentTask & { ste
       let focusError: unknown = null;
       try {
         let placed = 0, proposed = 0;
+        // One emission when the focus work actually starts asking its agent (the placement loop and the
+        // Other pass are its two entries), not per batch: the batches are small and quick.
+        let focusAnnounced = false;
+        const announceFocus = () => { if (!focusAnnounced) { focusAnnounced = true; emit({ step: 'focus' }); } };
         const sorting = (question: string) => [
           requestProgress, '---', readOnly,
           // Inline with every anchor named, like grouping: on a file path Codex's light model linked 2 of 60 groups (Oct 23).
@@ -891,6 +917,7 @@ export function buildRefreshTask(options: RefreshTaskOptions): AgentTask & { ste
           // A saved batch leaves the queue; the same batch twice means the save did not take, and asking again would loop.
           if (anchors.join('\n') === previousBatch) throw new Error(`focus: the placed requests are still queued (${anchors.length} starting ${anchors[0]}).`);
           previousBatch = anchors.join('\n');
+          announceFocus();
           const saved = await step('focus', sorting([
             `Do only section 4, steps 1–2 (place each request in a focus area, promoting one that holds several separate asks) for this batch, the \`focus-input\` output (also saved in ${writeInput('focus-input', input)}):\n\n\`\`\`json\n${JSON.stringify(input, null, 2)}\n\`\`\``,
             `Place each of these ${anchors.length} requests exactly once, by its "anchor": ${anchors.join(', ')}. Reply with only the JSON that \`record-focus\` takes ({"placements": [...], "proposals": [...]}).`,
@@ -904,6 +931,7 @@ export function buildRefreshTask(options: RefreshTaskOptions): AgentTask & { ste
         }
         const other = cli(['focus-input', '--other']);
         if (other.due) {
+          announceFocus();
           const saved = await step('focus', sorting(
             `Do only section 4, step 3 (propose focus areas from Other) for the \`focus-input --other\` output (also saved in ${writeInput('focus-input-other', other)}):\n\n\`\`\`json\n${JSON.stringify(other, null, 2)}\n\`\`\`\n\nPlace nothing ("placements": []). Reply with only the JSON that \`record-focus --other\` takes ({"placements": [], "proposals": [...]}), proposing nothing when nothing qualifies.`,
           ), (answer, retry) => recordFocus(['--other'], retry ? withoutRefusedProposals(answer, other, { other: true }) : answer), FOCUS_ANSWER_SCHEMA);
@@ -972,6 +1000,9 @@ export function buildRefreshTask(options: RefreshTaskOptions): AgentTask & { ste
         let remaining = storyInput.reviews as any[];
         let parts = 0, storyPreferencesTrimmed = 0;
         while (remaining.length) {
+          // The part count is unknown before packing sizes each part against the budget; batchDone counts
+          // the part about to be asked.
+          emit({ step: 'story', batchDone: parts + 1 });
           const batch = packStoryBatch(remaining, previous);
           remaining = remaining.slice(batch.length);
           const input = storyInputFor(batch, previous);

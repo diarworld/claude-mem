@@ -14,10 +14,10 @@ let store: SessionStore;
 let origin: string;
 const controllers: AbortController[] = [];
 
-async function start(setupScan: SetupScan | null) {
+async function start(setupScan: SetupScan | null, autoRefresh: unknown = null) {
   routes = new WorkViewRoutes({
     databasePath: join(FIXTURE_HOME, 'no-work-state.db'), reviewPath: ':memory:', pollIntervalMs: 20,
-    humanCopy: null, ledgerDir: null, setupScan,
+    humanCopy: null, ledgerDir: null, setupScan, ...(autoRefresh ? { autoRefresh } : {}),
   });
   const app = express();
   app.use(express.json());
@@ -49,8 +49,8 @@ function postScan(headers: Record<string, string> = { 'Content-Type': 'applicati
   return fetch(`${origin}/api/setup/scan`, { method: 'POST', headers, body });
 }
 
-/** Reads `setup-scan` events from the work view stream until one reports done. */
-async function scanEventsUntilDone(connected: () => void): Promise<any[]> {
+/** Reads `setup-scan` events from the work view stream until one satisfies `until`. */
+async function scanEvents(until: (event: any) => boolean, connected: () => void): Promise<any[]> {
   const controller = new AbortController();
   controllers.push(controller);
   const response = await fetch(`${origin}/api/work-view/events`, { signal: controller.signal });
@@ -59,7 +59,7 @@ async function scanEventsUntilDone(connected: () => void): Promise<any[]> {
   const events: any[] = [];
   let buffer = '';
   let connectedOnce = false;
-  while (!events.some(event => event.done)) {
+  while (!events.some(until)) {
     const { value, done } = await reader.read();
     if (done) break;
     buffer += decoder.decode(value, { stream: true });
@@ -75,6 +75,9 @@ async function scanEventsUntilDone(connected: () => void): Promise<any[]> {
   controller.abort();
   return events;
 }
+
+/** Reads `setup-scan` events from the work view stream until one reports done. */
+const scanEventsUntilDone = (connected: () => void) => scanEvents(event => event.done, connected);
 
 describe('setup scan endpoints', () => {
   it('answer 503 when the worker has no scan', async () => {
@@ -137,5 +140,35 @@ describe('setup scan endpoints', () => {
       ['antigravity-cli', 'Antigravity CLI', true, 2, 0, 2],
       ['opencode', 'OpenCode', true, 1, 0, 1],
     ]);
+  });
+
+  it('streams the background organizing progress after the scan is done, and carries the field in the state view', async () => {
+    const setupScan = scanWithFixtures();
+    /** Stands in for the refresh worker: reports one step of progress, then finishes. */
+    const refresh = {
+      start() {}, close() {}, status: () => null,
+      async runNow({ onProgress }: { onProgress?: (p: { step: string; batchDone?: number; batchTotal?: number }) => void }) {
+        onProgress?.({ step: 'goals', batchDone: 1, batchTotal: 3 });
+        return 'ok';
+      },
+    };
+    await start(setupScan, refresh);
+    let connected!: () => void;
+    const ready = new Promise<void>(resolve => { connected = resolve; });
+    const events = scanEvents(event => event.organizing?.state === 'done', connected);
+    await ready;
+    expect((await postScan()).status).toBe(202);
+    const streamed = await events;
+    // No blocking phase any more: the scan reaches done, and organizing rides in its field.
+    expect(streamed.some(event => event.phase === 'organizing')).toBe(false);
+    expect(streamed.filter(event => event.organizing).map(event => event.organizing)).toEqual([
+      { state: 'running', step: null, batchDone: null, batchTotal: null, error: null },
+      { state: 'running', step: 'goals', batchDone: 1, batchTotal: 3, error: null },
+      { state: 'done', step: 'goals', batchDone: 1, batchTotal: 3, error: null },
+    ]);
+    // The scan reported done before organizing started, and the frame stream kept its percent at 100.
+    expect(streamed[streamed.length - 1]).toMatchObject({ phase: 'done', done: true, percent: 100 });
+    const state = await (await fetch(`${origin}/api/setup/scan`)).json();
+    expect(state).toMatchObject({ phase: 'done', done: true, organizing: { state: 'done', step: 'goals', batchDone: 1, batchTotal: 3, error: null } });
   });
 });

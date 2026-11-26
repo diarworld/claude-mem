@@ -466,11 +466,11 @@ export function defaultAutoRefresh(ledgerDir: string, settingsPath = USER_SETTIN
     checkMs: refreshIntervalMs(SettingsDefaultsManager.loadFromFile(settingsPath, true, { readOnly: true }).CLAUDE_MEM_WORK_VIEW_REFRESH_INTERVAL_MIN),
     enabled: () => !setupRunning()
       && SettingsDefaultsManager.loadFromFile(settingsPath, true, { readOnly: true }).CLAUDE_MEM_WORK_VIEW_AUTO_REFRESH !== 'false',
-    runJob: async ({ needs, reason }) => {
+    runJob: async ({ needs, reason, onProgress }) => {
       // The judges are read from settings per run, so a provider change applies to the next refresh.
       const setup = reason === 'setup-scan';
       const task = buildRefreshTask({ needs, reason, dataDir: DATA_DIR, ledgerDir, pluginRoot: getPackageRoot(), openDatabase, localDeviceId, saveFocus,
-        judge: setup ? null : configuredJudge(settingsPath), focusJudge: setup ? null : configuredFocusJudge(settingsPath) });
+        judge: setup ? null : configuredJudge(settingsPath), focusJudge: setup ? null : configuredFocusJudge(settingsPath), onProgress });
       return { ...(await runAgentTask(task)), steps: task.steps };
     },
     // Jev labels open work-state items on every check; read from settings each time, like the judges.
@@ -625,7 +625,8 @@ export class WorkViewRoutes extends BaseRouteHandler {
       : null;
     this.focusSharePublisher?.start();
     if (this.autoRefresh) this.setupScan?.setLocalExtractor(async () => {
-      const result = await this.autoRefresh!.runNow({ reason: 'setup-scan' });
+      // The scan's organizing field carries the refresh's live progress: each step emission lands there.
+      const result = await this.autoRefresh!.runNow({ reason: 'setup-scan', onProgress: p => this.setupScan?.noteOrganizingProgress(p) });
       if (result === 'ok' || result === 'idle') return true;
       if (result === 'waiting-for-agent' || result === 'failed') return false;
       throw new Error('Another refresh is running. Try again when it finishes.');

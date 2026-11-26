@@ -70,12 +70,38 @@ export interface SetupScanState {
   hostedNotice: string | null;
   /** The owner's newest typed prompts, newest first, quoted as typed (the Reveal shows them while no agent can extract). */
   recentPrompts: SetupRecentPrompt[];
+  /**
+   * The background organizing (the work-view refresh) that follows a finished scan. A field, not a phase: the
+   * wizard must never wait for it (Oct 26: it froze the scan screen at 98% for 10+ minutes on a large window),
+   * so the scan reports `done` first and this field carries the live progress and the outcome. Null when this
+   * scan started none (no prompts, no extractor, or an upgrade path that goes to the upload hold instead).
+   */
+  organizing: SetupScanOrganizing | null;
+}
+
+/** Live progress of the scan's background organizing. */
+export interface SetupScanOrganizing {
+  state: 'running' | 'done' | 'failed';
+  /** The refresh step now asking its agent ('goals', 'grouping', 'review', …); null between steps. */
+  step: string | null;
+  /** Units of the current step already started (including the one running); null when the step has no count. */
+  batchDone: number | null;
+  /** Units the current step will ask in total; null when unknown before the step starts packing its batches. */
+  batchTotal: number | null;
+  /** Why organizing stopped; null while it runs or finished. */
+  error: string | null;
 }
 
 export interface SetupRecentPrompt { agent: PromptAgentId; at: string; text: string }
 
 const RECENT_PROMPTS = 5;
 const RECENT_PROMPT_CHARACTERS = 280;
+/**
+ * The organizing field's honest reason when the extractor reports `false` without a throw (no logged-in
+ * agent, or the refresh failed): the boolean contract carries no message of its own. The screen words the
+ * failure itself; the work view retries on its own schedule either way.
+ */
+const ORGANIZING_STOPPED_REASON = 'The background refresh could not finish.';
 
 /** The SessionStore methods the scan uses. */
 export interface SetupScanStore {
@@ -124,7 +150,7 @@ function idleState(): SetupScanState {
     uploadedAgents: null,
     agents: AGENT_LABELS.map(([id, label]) => ({ id, label, detected: false, prompts: 0, fromMemory: 0, fromTranscripts: 0, canRunSetup: null, cannotRunReason: null, uploadBytes: 0 })),
     percent: 0, phase: 'idle', done: false, windowStart: null, startedAt: null, finishedAt: null, durationMs: null,
-    added: 0, skippedSources: 0, error: null, usage: null, usageError: null, hostedNotice: null, recentPrompts: [],
+    added: 0, skippedSources: 0, error: null, usage: null, usageError: null, hostedNotice: null, recentPrompts: [], organizing: null,
   };
 }
 
@@ -228,6 +254,50 @@ export class SetupScan {
       finishedAt: new Date(finishedAt).toISOString(), durationMs: finishedAt - startedAt,
     }, true);
     logger.info('IMPORT', 'Setup prompt scan finished', { durationMs: finishedAt - startedAt });
+  }
+
+  /**
+   * Runs the local extraction after the scan has already finished, reporting its progress in the
+   * organizing field. The scan's phase and result never change here: the person is never blocked on
+   * organizing, and My Work retries a failed refresh on its own schedule.
+   */
+  private beginOrganizing(): void {
+    // The scan's startedAt identifies it: a settled run from an earlier scan must not overwrite the
+    // organizing field of a later scan (a second start is legal while one is still organizing).
+    const scanStartedAt = this.current.startedAt;
+    this.update({ organizing: { state: 'running', step: null, batchDone: null, batchTotal: null, error: null } }, true);
+    void this.localExtraction!().then(
+      ok => this.settleOrganizing(scanStartedAt, ok ? null : ORGANIZING_STOPPED_REASON),
+      error => this.settleOrganizing(scanStartedAt, error instanceof Error ? error.message : String(error)),
+    );
+  }
+
+  /**
+   * Records an organizing outcome on the scan it belongs to, dropping it when that scan is gone (its
+   * phase moved on — e.g. another scan is reading) so a stale result never lands on the current scan.
+   * The last progress stays on the field: a settled organizing keeps the step it stopped on.
+   */
+  private settleOrganizing(scanStartedAt: string | null, error: string | null): void {
+    if (this.current.phase !== 'done' || this.current.startedAt !== scanStartedAt) return;
+    this.update({
+      organizing: { ...(this.current.organizing ?? { step: null, batchDone: null, batchTotal: null }), state: error ? 'failed' : 'done', error },
+    }, true);
+  }
+
+  /**
+   * Live progress from the refresh pipeline's onProgress callbacks. Only a running organizing changes;
+   * never throws, so a listener failure of the caller can never break the refresh that reports to it.
+   */
+  noteOrganizingProgress(progress: { step: string; batchDone?: number; batchTotal?: number }): void {
+    try {
+      const organizing = this.current.organizing;
+      if (!organizing || organizing.state !== 'running') return;
+      this.update({
+        organizing: { ...organizing, step: progress.step, batchDone: progress.batchDone ?? null, batchTotal: progress.batchTotal ?? null },
+      }, true);
+    } catch (error) {
+      logger.warn('IMPORT', 'An organizing progress update was dropped', { error: error instanceof Error ? error.message : String(error) });
+    }
   }
 
   /** The person's answer to "upload your last 30 days of prompts to cmem.ai?". Declining keeps everything local. */
@@ -374,11 +444,12 @@ export class SetupScan {
         .map(prompt => ({ agent: prompt.agent, at: new Date(prompt.at).toISOString(), text: prompt.text.trim().slice(0, RECENT_PROMPT_CHARACTERS) }));
       const summary = { agents: agents.map(agent => ({ ...agent, uploadBytes: uploadBytes.get(agent.id) ?? 0 })), added, skippedSources: result.skippedSources.length, usage, usageError, recentPrompts };
       if (ownerPrompts.length && this.localExtraction) {
-        this.update({ phase: 'organizing', percent: 98, ...summary }, true);
-        if (await this.localExtraction()) {
-          this.finish(summary, startedAt);
-          return;
-        }
+        // The wizard never waits for organizing (Oct 26: the work-view refresh makes many model calls and
+        // froze the scan screen at 98% for 10+ minutes on a large window). Report the finished scan, then
+        // run organizing in the background and surface its progress through the organizing field.
+        this.finish(summary, startedAt);
+        this.beginOrganizing();
+        return;
       }
       if (this.extract && !ownerPrompts.length) {
         // Nothing to upload, so there is nothing to ask about; the extractor records an empty result without contacting Cloud.

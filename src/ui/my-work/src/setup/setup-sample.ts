@@ -149,7 +149,9 @@ export function createSampleSetupSource(newInstall: boolean, holdScanAtPercent: 
       }
       const done = share === 1
       if (holdScanAtPercent !== null && share === holdScanAtPercent / 100) clearInterval(timer)
-      publish({ scan: { ...data.scan, agents, percent: Math.floor(share * 100), phase: done ? 'done' : share < 0.5 ? 'reading' : share < 0.95 ? 'checking' : 'saving', done, error: null } })
+      publish({ scan: { ...data.scan, agents, percent: Math.floor(share * 100), phase: done ? 'done' : share < 0.5 ? 'reading' : share < 0.95 ? 'checking' : 'saving', done, error: null,
+        // A finished sample scan keeps organizing live with counts, so the screen's progress line is visible here.
+        organizing: done ? { state: 'running', step: 'review', batchDone: 3, batchTotal: 9, error: null } : null } })
       if (!done) return
       clearInterval(timer)
       land()

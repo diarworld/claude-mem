@@ -21,6 +21,18 @@ export interface SetupScanAgent {
 }
 
 export type { SetupScanPhase }
+/** The worker's background organizing after a finished scan (SetupScanState.organizing), trimmed to what the screen shows. */
+export interface SetupScanOrganizing {
+  state: 'running' | 'done' | 'failed'
+  /** The refresh step now asking its agent ('goals', 'grouping', 'review', …); null between steps. */
+  step: string | null
+  /** Units of the current step already started; null when the step has no count. */
+  batchDone: number | null
+  /** Units the step will ask in total; null when unknown before it starts packing its batches. */
+  batchTotal: number | null
+  /** Why organizing stopped; null while it runs or finished. */
+  error: string | null
+}
 export interface SetupScanView {
   agents: SetupScanAgent[]; percent: number; phase: SetupScanPhase; done: boolean; error: string | null; improveProduct: boolean
   /** Set only when this page's own request to read or start the scan failed; the worker's scan state never has it. */
@@ -29,6 +41,8 @@ export interface SetupScanView {
   hostedNotice?: string | null
   /** Which tools' prompts ever left this machine: null before the scan's upload hold was answered, [] when nothing left. */
   uploadedAgents: string[] | null
+  /** The background organizing that follows a finished scan, live while the scan screen is up. Absent or null from an older worker, or when this scan started none. */
+  organizing?: SetupScanOrganizing | null
 }
 /** The owner's newest typed prompts, quoted as typed (SetupScanState.recentPrompts). */
 export interface SetupRecentPrompt { agent: string; at: string; text: string }
@@ -192,7 +206,7 @@ const toScanView = (scan: WorkerScanState): SetupScanView => ({
     id, label, detected, prompts, canRunSetup: null, cannotRunReason: null, uploadBytes: uploadBytes ?? 0,
   })),
   percent: scan.percent, phase: scan.phase, done: scan.done, error: scan.error, improveProduct: scan.improveProduct ?? true,
-  uploadedAgents: scan.uploadedAgents ?? null, hostedNotice: scan.hostedNotice ?? null,
+  uploadedAgents: scan.uploadedAgents ?? null, hostedNotice: scan.hostedNotice ?? null, organizing: scan.organizing ?? null,
 })
 
 // Keep rapid checkbox changes in click order; scan and upload never wait on this queue.

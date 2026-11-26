@@ -1994,3 +1994,65 @@ describe('My Work refresh stays on one agent (#5189)', () => {
     });
   });
 });
+
+describe('refresh progress emissions', () => {
+  it('reports each step of model work as it starts, with done/total where the batch count is known', async () => {
+    const dir = scratchDir('auto-refresh-progress');
+    try {
+      const database = fixtureDatabase();
+      // Ten decided groups, none reviewed yet, so the review step runs two batches (REVIEW_BATCH = 8);
+      // session z stays undecided, so the grouping step runs once for it.
+      const sessions = 'bcdefghij'.split('');
+      sessions.forEach((session, index) => {
+        database.prepare('INSERT INTO sdk_sessions VALUES (?, ?, ?, ?, ?, ?, ?)').run(index + 2, 'claude', session, `m${index + 2}`, 'repo/tree', `Build feature ${session}`, NOW - 2 * DAY);
+        database.prepare('INSERT INTO user_prompts (session_db_id, prompt_number, prompt_text, created_at_epoch) VALUES (?, ?, ?, ?)').run(index + 2, 1, `Build feature ${session}`, NOW - 2 * DAY);
+      });
+      database.prepare('INSERT INTO sdk_sessions VALUES (?, ?, ?, ?, ?, ?, ?)').run(sessions.length + 2, 'claude', 'z', `m${sessions.length + 2}`, 'repo/tree', 'Build feature z', NOW - 2 * DAY);
+      database.prepare('INSERT INTO user_prompts (session_db_id, prompt_number, prompt_text, created_at_epoch) VALUES (?, ?, ?, ?)').run(sessions.length + 2, 1, 'Build feature z', NOW - 2 * DAY);
+      const decisions = join(dir, 'decisions.json');
+      writeFileSync(decisions, JSON.stringify({ groups: ['a', ...sessions].map(session => ({ title: `Feature ${session}`, conversations: [key(session)] })) }));
+      runCli(['apply', decisions], { dir, database, now: NOW, print: () => {} });
+      const progress: Array<{ step: string; batchDone?: number; batchTotal?: number }> = [];
+      const task = buildRefreshTask({ localDeviceId: () => '', needs: { due: 10, ungrouped: 1, goalsStale: false, unplaced: 1, needed: true },
+        reason: 'scheduled', dataDir: dir, ledgerDir: dir, pluginRoot: PLUGIN_ROOT, openDatabase: handle(database), now: () => NOW,
+        saveFocus: focusWriter(database).save, onProgress: p => progress.push(p) });
+      const ask = async (prompt: string) => {
+        // Group whatever the batch asked about (the fixed defaultAnswer names only conversation a).
+        if (prompt.includes('Do only section 1')) {
+          const input = JSON.parse(readFileSync(/also saved in (.+?\.json)/.exec(prompt)![1], 'utf8'));
+          return JSON.stringify({ groups: input.conversations.map((conversation: { conversationKey: string }) => ({ title: 'Feature z', conversations: [conversation.conversationKey] })), ignored: [] });
+        }
+        return defaultAnswer(prompt);
+      };
+      expect(await task.run(ask, 'claude-code')).toContain('story written.');
+      // One emission per unit of model work, at its start: the grouping batch (total unknown), each review
+      // batch (total known), focus once, and each story part.
+      const byStep = (step: string) => progress.filter(p => p.step === step);
+      expect(byStep('grouping')).toEqual([{ step: 'grouping', batchDone: 1 }]);
+      expect(byStep('review').sort((left, right) => left.batchDone! - right.batchDone!)).toEqual([
+        { step: 'review', batchDone: 1, batchTotal: 2 }, { step: 'review', batchDone: 2, batchTotal: 2 },
+      ]);
+      expect(byStep('focus')).toEqual([{ step: 'focus' }]);
+      expect(byStep('story')).toEqual([{ step: 'story', batchDone: 1 }]);
+      // Nothing else was reported, and nothing carried a count it could not know.
+      expect(new Set(progress.map(p => p.step))).toEqual(new Set(['grouping', 'review', 'focus', 'story']));
+      expect(progress.filter(p => p.step === 'grouping' || p.step === 'focus').every(p => p.batchTotal === undefined)).toBe(true);
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+
+  it('a progress listener that throws never breaks the run', async () => {
+    const dir = scratchDir('auto-refresh-progress-throw');
+    try {
+      const database = fixtureDatabase();
+      const task = buildRefreshTask({ localDeviceId: () => '', needs: { due: 0, ungrouped: 1, goalsStale: false, unplaced: 0, needed: true },
+        reason: 'scheduled', dataDir: dir, ledgerDir: dir, pluginRoot: PLUGIN_ROOT, openDatabase: handle(database), now: () => NOW,
+        saveFocus: focusWriter(database).save, onProgress: () => { throw new Error('listener broke'); } });
+      const warnings: unknown[][] = [];
+      const warn = spyOn(logger, 'warn').mockImplementation((...args: unknown[]) => { warnings.push(args); });
+      try {
+        expect(await task.run(async prompt => defaultAnswer(prompt), 'claude-code')).toContain('story written.');
+        expect(warnings.some(args => String(args[1]).includes('progress listener failed'))).toBe(true);
+      } finally { warn.mockRestore(); }
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+});

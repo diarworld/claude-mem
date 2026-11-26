@@ -339,4 +339,77 @@ describe('setup prompt scan', () => {
     expect(state).toMatchObject({ phase: 'failed', done: true, error: 'database is locked' });
     expect(state.agents.every(agent => agent.prompts === 0)).toBe(true);
   });
+
+  it('a deferred extraction never holds the scan: it is done at once, with organizing running in the field', async () => {
+    hookRecorded('claude', 'session-background', 'alpha', 'a prompt', '2026-10-05T09:00:00.000Z');
+    // Never resolved in this test: the wizard must not wait for it whatever happens to the extraction.
+    const gate = new Promise<boolean>(() => {});
+    const scan = setupScan();
+    scan.setLocalExtractor(() => gate);
+    const doneStates: SetupScanState[] = [];
+    scan.subscribe(state => { if (state.done) doneStates.push(state); });
+    scan.start();
+    await scan.finished();
+    expect(scan.state()).toMatchObject({ phase: 'done', done: true, percent: 100,
+      organizing: { state: 'running', step: null, batchDone: null, batchTotal: null, error: null } });
+    expect(doneStates.filter(state => state.organizing?.state === 'running').length).toBeGreaterThan(0);
+  });
+
+  it('a settled extraction flips organizing to done and leaves the finished scan alone', async () => {
+    hookRecorded('claude', 'session-settle', 'alpha', 'a prompt', '2026-10-05T09:00:00.000Z');
+    let release!: (ok: boolean) => void;
+    const gate = new Promise<boolean>(resolve => { release = resolve; });
+    const scan = setupScan();
+    scan.setLocalExtractor(() => gate);
+    scan.start();
+    await scan.finished();
+    const finishedState = scan.state();
+    release!(true);
+    for (let wait = 0; scan.state().organizing?.state !== 'done' && wait < 100; wait++) await Bun.sleep(5);
+    expect(scan.state()).toMatchObject({ phase: 'done', done: true, percent: 100,
+      organizing: { state: 'done', error: null } });
+    // The scan's own result is untouched: only the organizing field moved.
+    const { organizing: after, ...restAfter } = scan.state();
+    const { organizing: before, ...restBefore } = finishedState;
+    expect(after).not.toEqual(before);
+    expect(restAfter).toEqual(restBefore);
+  });
+
+  it('a rejected extraction fails only organizing; the scan stays done and nothing throws', async () => {
+    hookRecorded('claude', 'session-refused', 'alpha', 'a prompt', '2026-10-05T09:00:00.000Z');
+    const scan = setupScan();
+    scan.setLocalExtractor(async () => { throw new Error('The gateway refused the request.'); });
+    scan.start();
+    await scan.finished();
+    expect(scan.state()).toMatchObject({ phase: 'done', done: true,
+      organizing: { state: 'failed', error: 'The gateway refused the request.' } });
+    // A later extraction settles the same way; the scan never re-enters a running phase.
+    scan.noteOrganizingProgress({ step: 'goals', batchDone: 1 });
+    expect(scan.state().organizing).toMatchObject({ state: 'failed' });
+  });
+
+  it('organizing progress lands in the field and reaches the subscribers', async () => {
+    hookRecorded('claude', 'session-progress', 'alpha', 'a prompt', '2026-10-05T09:00:00.000Z');
+    let release!: (ok: boolean) => void;
+    const gate = new Promise<boolean>(resolve => { release = resolve; });
+    const scan = setupScan();
+    scan.setLocalExtractor(() => gate);
+    scan.start();
+    await scan.finished();
+    const frames: SetupScanState[] = [];
+    scan.subscribe(state => frames.push(state));
+    scan.noteOrganizingProgress({ step: 'goals', batchDone: 1, batchTotal: 4 });
+    scan.noteOrganizingProgress({ step: 'grouping', batchDone: 2 });
+    expect(scan.state().organizing).toEqual({ state: 'running', step: 'grouping', batchDone: 2, batchTotal: null, error: null });
+    expect(frames.map(frame => frame.organizing)).toEqual([
+      { state: 'running', step: 'goals', batchDone: 1, batchTotal: 4, error: null },
+      { state: 'running', step: 'grouping', batchDone: 2, batchTotal: null, error: null },
+    ]);
+    // After the extraction settles, later progress belongs to nothing running: it is dropped, and the
+    // settled field keeps the last step it was on.
+    release!(true);
+    for (let wait = 0; scan.state().organizing?.state !== 'done' && wait < 100; wait++) await Bun.sleep(5);
+    scan.noteOrganizingProgress({ step: 'story', batchDone: 1 });
+    expect(scan.state().organizing).toEqual({ state: 'done', step: 'grouping', batchDone: 2, batchTotal: null, error: null });
+  });
 });
