@@ -17,54 +17,14 @@ import { loadTelemetryConfig, resolveTelemetryConsent } from '../../services/tel
 import { CANONICAL_CLOUD_SYNC_HUB_URL } from '../../shared/SettingsDefaultsManager.js';
 import { cmemProOrigin } from '../../shared/cmem-gateway.js';
 import { USER_SETTINGS_PATH } from '../../shared/paths.js';
-import { updateSettingsDocument } from '../../shared/settings-document.js';
 import { intentCredentialHeaders, readIntentCredentials } from '../../shared/intent-credentials.js';
 import { relayedLine } from '../../shared/relayed-text.js';
 import { CLOUD_SYNC_SETUP_CONTRACT, isSetupId, type SetupCloudSyncOffer } from '../../shared/setup-funnel.js';
 import { parseTeamBrainTeamRef, type TeamBrainTeamRef } from '../../shared/teambrain.js';
 import type { DeliveredCmemMemoryCredentials } from '../cmem-memory-credentials.js';
+import { isInteractive, log } from './cli-io.js';
+import { mergeSettings } from './settings-io.js';
 import type { UsageSummary } from './usage-summary.js';
-
-export const isInteractive = process.stdin.isTTY === true;
-
-export const log = {
-  info: (msg: string) => isInteractive ? p.log.info(msg) : console.log(`  ${msg}`),
-  success: (msg: string) => isInteractive ? p.log.success(msg) : console.log(`  ${msg}`),
-  warn: (msg: string) => isInteractive ? p.log.warn(msg) : console.warn(`  ${msg}`),
-  error: (msg: string) => isInteractive ? p.log.error(msg) : console.error(`  ${msg}`),
-};
-
-/**
- * Merge installer settings into settings.json through the shared settings
- * document boundary. The whole document is kept (a Claude-Code-style `env`
- * wrapper and its root peers survive). An unreadable file is no longer reset
- * to `{}`: it is moved aside to `settings.json.corrupt-<epoch-ms>` (the user's
- * bytes are kept) and a fresh document is written, so a corrupt file can never
- * stop setup or drop the sign-in's memory key. Returns false only when the
- * write itself fails; the worker and hooks refuse-and-report instead. The
- * boundary writes settings.json owner-only from the first byte (it can carry
- * the CMEM Pro setup token and provider API keys).
- */
-export function mergeSettings(
-  updates: Record<string, string>,
-  settingsPath: string = USER_SETTINGS_PATH,
-  mutate?: (target: Record<string, unknown>) => void,
-): boolean {
-  const result = updateSettingsDocument(settingsPath, updates, {}, mutate, { quarantineCorrupt: true });
-  if (result.status === 'refused') {
-    const reason = result.error instanceof Error ? result.error.message : String(result.error);
-    // A quarantined file is moved back when the fresh write fails; quarantinedTo
-    // survives only if even that move failed, so say where the bytes are.
-    log.error(result.quarantinedTo
-      ? `Failed to write settings to ${settingsPath}: ${reason}. Its unreadable previous contents are in ${result.quarantinedTo}.`
-      : `Failed to write settings to ${settingsPath}: ${reason}`);
-    return false;
-  }
-  if (result.quarantinedTo) {
-    log.warn(`${settingsPath} could not be read, so it was moved to ${result.quarantinedTo} and a fresh settings file was started. Copy back any settings you still need from it.`);
-  }
-  return true;
-}
 
 // --- claude-mem OAuth pairing ----------------------------------------------
 // Every installer authenticates through the same GitHub/Google OAuth screen as

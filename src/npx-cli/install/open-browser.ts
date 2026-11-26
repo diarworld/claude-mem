@@ -7,7 +7,7 @@
  */
 
 import { spawnSync } from 'child_process';
-import { isInteractive, log } from './pairing.js';
+import { isInteractive, log } from './cli-io.js';
 
 /**
  * Best-effort "open this URL in the user's browser". Every failure mode is
@@ -25,7 +25,7 @@ export function openBrowser(url: string): void {
     }
   } catch {
     // [ANTI-PATTERN IGNORED]: opening a browser is a convenience, not a step of the
-    // install; the recovery is the URL already printed above this call, which the
+    // install; the recovery is the URL the caller already printed, which the
     // user can open by hand. A headless box legitimately has no opener at all.
   }
 }

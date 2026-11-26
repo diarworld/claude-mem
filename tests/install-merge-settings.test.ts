@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
 import { mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
-import { buildTrialReadySettings, mergeSettings } from '../src/npx-cli/install/pairing.js';
+import { mergeSettings } from '../src/npx-cli/install/settings-io.js';
 
 let tempDir: string;
 let settingsPath: string;
@@ -63,28 +63,20 @@ describe('mergeSettings: unreadable settings.json is quarantined, never reset', 
     }
   });
 
-  it('never stops the sign-in memory key from saving over a corrupt file', () => {
+  it('never drops a pending settings write over a corrupt file (reproduction of the sign-in memory key loss)', () => {
     writeFileSync(settingsPath, '{"CLAUDE_MEM_PROVIDER":', 'utf-8');
-    const trialSettings = buildTrialReadySettings({
-      setupToken: 'setup-token',
-      userId: 'user-1',
-      hubUrl: 'https://hub.example.test',
-      memory: {
-        memoryKey: 'cm_pro_trial_memory_key',
-        memoryBaseUrl: 'https://gateway.example.test/v1',
-        memoryModel: 'gateway-model',
-      },
-      plan: 'pro',
-      trialEndsAt: null,
-      team: null,
-      teambrainUrl: null,
-    }, 'test-device');
+    const pendingSettings = {
+      CLAUDE_MEM_PROVIDER: 'openrouter',
+      CLAUDE_MEM_OPENROUTER_API_KEY: 'cm_pro_trial_memory_key',
+      CLAUDE_MEM_OPENROUTER_BASE_URL: 'https://gateway.example.test/v1',
+      CLAUDE_MEM_OPENROUTER_MODEL: 'gateway-model',
+    };
 
-    expect(mergeSettings(trialSettings, settingsPath)).toBe(true);
+    expect(mergeSettings(pendingSettings, settingsPath)).toBe(true);
 
     const written = JSON.parse(readFileSync(settingsPath, 'utf-8'));
-    expect(written.CLAUDE_MEM_PRO_MEMORY_KEY).toBe('cm_pro_trial_memory_key');
-    expect(written.CLAUDE_MEM_PRO_TRIAL_STATE).toBe('active');
+    expect(written.CLAUDE_MEM_OPENROUTER_API_KEY).toBe('cm_pro_trial_memory_key');
+    expect(written.CLAUDE_MEM_PROVIDER).toBe('openrouter');
     expect(quarantinedFiles()).toHaveLength(1);
   });
 });

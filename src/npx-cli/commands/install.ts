@@ -45,13 +45,12 @@ import {
   PROVIDER_PROMPT_MESSAGE,
 } from '../cmem-pro-costs.js';
 import { openBrowser, waitForReturnToOpenBrowser } from '../install/open-browser.js';
+import { isInteractive, log } from '../install/cli-io.js';
+import { mergeSettings } from '../install/settings-io.js';
 import {
   completeInstallerOAuthLogin,
-  isInteractive,
   lastOAuthStartErrorMessage,
   lastOAuthStartFailure,
-  log,
-  mergeSettings,
   noteDeviceCode,
   pairingAcceptsReady,
   saveReadyPairing,
