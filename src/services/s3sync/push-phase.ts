@@ -7,7 +7,8 @@
  *                    │               │
  *                    └──▶ error ◀────┘
  * A failure at any step lands in error; the next run starts again at
- * snapshotting. ok returns to idle only when the next run begins.
+ * snapshotting. After a run the phase stays ok or error until the next run
+ * sets snapshotting again; idle is only the initial value.
  */
 export const S3_SYNC_PUSH_PHASES = ['idle', 'snapshotting', 'uploading', 'ok', 'error'] as const;
 export type S3SyncPushPhase = (typeof S3_SYNC_PUSH_PHASES)[number];
